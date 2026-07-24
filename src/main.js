@@ -25,6 +25,7 @@ let readingPage = false;
 let pendingPage = null; // Track page being read
 let headBobTimer = 0;
 let gameStarted = false;
+let audioContextResumed = false; // becomes true on the player's first click/keypress anywhere
 
 // --- ACCURATE MECHANICS ---
 let stamina = 100;
@@ -151,6 +152,8 @@ function init() {
     function resumeAudioContext() {
         const ctx = THREE.AudioContext.getContext();
         if (ctx.state === 'suspended') ctx.resume();
+        audioContextResumed = true;
+        tryPlayIntro();
     }
     document.addEventListener('pointerdown', resumeAudioContext, { once: true });
     document.addEventListener('keydown', resumeAudioContext, { once: true });
@@ -429,7 +432,7 @@ function loadAssets() {
     audioLoader.load('assets/intro.mp3', function(buffer) {
         soundIntro.setBuffer(buffer);
         registerMusic(soundIntro, 0.8);
-        soundIntro.play();
+        tryPlayIntro();
     });
     const stageFiles = ['stage1.mp3', 'stage2.mp3', 'stage3.mp3', 'stage4.mp3'];
     stageFiles.forEach((file, i) => {
@@ -521,6 +524,20 @@ function updateStageMusic(pages) {
     if (currentStage >= 0) fadeOutAndStop(stageTracks[currentStage]);
     fadeIn(stageTracks[idx]);
     currentStage = idx;
+}
+
+function tryPlayIntro() {
+    // Only ever plays as a menu-time cue: the AudioContext can't produce
+    // sound until the player's first click/keypress resumes it, which may
+    // happen well after intro.mp3 has already loaded (or well after the
+    // splash/menu has been showing) — playing unconditionally in the load
+    // callback meant this could suddenly become audible at an arbitrary,
+    // unrelated later moment (in the menu, or partway into gameplay). Skip
+    // entirely once the game has actually started rather than let it bleed
+    // into play.
+    if (audioContextResumed && soundIntro.buffer && !gameStarted && !soundIntro.isPlaying) {
+        soundIntro.play();
+    }
 }
 
 function playMenuMusic() {
@@ -628,19 +645,31 @@ function buildEnvironment(textureLoader) {
         }
     });
 
-    // Real animated 3D model instead of a flat billboard plane.
+    // Real animated 3D model instead of a flat billboard plane. Uses a plain,
+    // untextured rigged figure (no gendered branding/clothing) rather than a
+    // specific named character, tinted pale/cold to read as a spirit.
     const gltfLoader = new GLTFLoader(loadingManager);
     gltfLoader.load('models/ghost.glb', (gltf) => {
         ghost = gltf.scene;
 
+        ghost.traverse((child) => {
+            if (child.isMesh && child.material) {
+                const mats = Array.isArray(child.material) ? child.material : [child.material];
+                mats.forEach((mat) => {
+                    mat.color = new THREE.Color(0xdde8ee); // pale, cold ghostly tint
+                    mat.transparent = true;
+                    mat.opacity = 0.85;
+                });
+            }
+        });
+
         // Normalize scale from the model's actual bounding box rather than a
         // guessed constant, since the source model's native units are unknown
-        // here. Target height chosen to loom over the player (camera eye
-        // height 1.6) similar to the old oversized billboard, without being
-        // absurd.
+        // here. Target height kept close to human scale — the first pass at
+        // this used a much taller target and rendered far too large.
         const box = new THREE.Box3().setFromObject(ghost);
         const modelHeight = box.max.y - box.min.y;
-        const targetHeight = 4.5;
+        const targetHeight = 2.0;
         const scale = modelHeight > 0 ? targetHeight / modelHeight : 1;
         ghost.scale.setScalar(scale);
         // Distance from the model's origin down to its lowest point (feet),
