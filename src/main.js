@@ -53,7 +53,7 @@ const windUniforms = { uTime: { value: 0 }, uWindStrength: { value: 1.0 } };
 let grassMesh = null;            // InstancedMesh of grass blades
 let grassBlades = [];            // per-slot {ox, oz, rot, scale} offsets around the player
 let grassAnchorX = Infinity, grassAnchorZ = Infinity; // last grid cell the grass was centered on
-const GRASS_CELL = 0.9;          // world spacing between grass cells
+const GRASS_CELL = 0.5;          // world spacing between grass cells (smaller = denser)
 const GRASS_RADIUS = 34;         // how far grass extends around the player
 let bloomPass = null, gtaoPass = null; // graphics-effect passes (toggled in Settings)
 let sceneFog = null;             // the FogExp2 instance (attached/detached by the fog toggle)
@@ -736,7 +736,7 @@ function addWindToMaterial(mat, opts = {}) {
 // each part an InstancedMesh sharing the same per-tree transforms. Also places
 // the 4 diary pages against random trees.
 function buildForest(barkTexture) {
-    const numTrees = 220, forestRadius = 150;
+    const numTrees = 900, forestRadius = 150;
 
     const trunkGeo = new THREE.CylinderGeometry(0.18, 0.5, 6, 10, 6);
     trunkGeo.translate(0, 3, 0); // base at y=0
@@ -751,7 +751,7 @@ function buildForest(barkTexture) {
     const treeTransforms = [];
     const dummy = new THREE.Object3D();
     for (let i = 0; i < numTrees; i++) {
-        const r = 15 + Math.random() * (forestRadius - 15);
+        const r = 12 + Math.random() * (forestRadius - 12);
         const th = Math.random() * Math.PI * 2;
         const x = r * Math.cos(th), z = r * Math.sin(th);
         const s = 0.8 + Math.random() * 0.7;
@@ -846,24 +846,27 @@ function buildGrass() {
     for (let dgx = -N; dgx <= N; dgx++) {
         for (let dgz = -N; dgz <= N; dgz++) {
             if ((dgx * GRASS_CELL) ** 2 + (dgz * GRASS_CELL) ** 2 <= GRASS_RADIUS * GRASS_RADIUS) {
-                grassBlades.push({ dgx, dgz });
+                // Two jittered blades per cell for a fuller, denser field.
+                grassBlades.push({ dgx, dgz, sub: 0 });
+                grassBlades.push({ dgx, dgz, sub: 1 });
             }
         }
     }
 
-    const g = new THREE.PlaneGeometry(0.07, 0.75, 1, 4);
-    g.translate(0, 0.375, 0); // base at y=0
+    const BLADE_H = 0.32;
+    const g = new THREE.PlaneGeometry(0.07, BLADE_H, 1, 4);
+    g.translate(0, BLADE_H / 2, 0); // base at y=0
     const colors = [];
     const posA = g.attributes.position;
     for (let i = 0; i < posA.count; i++) {
-        const t = posA.getY(i) / 0.75; // 0 root -> 1 tip
+        const t = posA.getY(i) / BLADE_H; // 0 root -> 1 tip
         const c = new THREE.Color().setHSL(0.27, 0.55, 0.10 + 0.22 * t);
         colors.push(c.r, c.g, c.b);
     }
     g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
 
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1.0, metalness: 0.0, side: THREE.DoubleSide });
-    addWindToMaterial(mat, { minY: 0.0, maxY: 0.75, amp: 0.12 });
+    addWindToMaterial(mat, { minY: 0.0, maxY: BLADE_H, amp: 0.06 });
 
     grassMesh = new THREE.InstancedMesh(g, mat, grassBlades.length);
     grassMesh.castShadow = false;
@@ -883,15 +886,16 @@ function repositionGrass(px, pz) {
     for (let k = 0; k < grassBlades.length; k++) {
         const o = grassBlades[k];
         const cx = cx0 + o.dgx, cz = cz0 + o.dgz;
-        const h1 = hash(cx * 0.137 + cz * 0.919);
-        const h2 = hash(cx * 0.731 - cz * 0.251);
-        const h3 = hash(cx * 1.700 + cz * 0.300);
-        const wx = (cx + (h1 - 0.5) * 0.9) * GRASS_CELL;
-        const wz = (cz + (h2 - 0.5) * 0.9) * GRASS_CELL;
+        const seed = o.sub * 53.3; // second blade of the cell gets a distinct jitter
+        const h1 = hash(cx * 0.137 + cz * 0.919 + seed);
+        const h2 = hash(cx * 0.731 - cz * 0.251 + seed);
+        const h3 = hash(cx * 1.700 + cz * 0.300 + seed);
+        const wx = (cx + (h1 - 0.5) * 0.95) * GRASS_CELL;
+        const wz = (cz + (h2 - 0.5) * 0.95) * GRASS_CELL;
         dummy.position.set(wx, terrainHeight(wx, wz), wz);
         dummy.rotation.set(0, h3 * Math.PI * 2, 0);
-        const s = 0.7 + h1 * 0.7;
-        dummy.scale.set(s, 0.8 + h2 * 0.6, s);
+        const s = 0.75 + h1 * 0.5;
+        dummy.scale.set(s, 0.7 + h2 * 0.35, s);
         dummy.updateMatrix();
         grassMesh.setMatrixAt(k, dummy.matrix);
     }
