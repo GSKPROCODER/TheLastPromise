@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { FilmPass } from 'three/examples/jsm/postprocessing/FilmPass.js';
@@ -33,6 +34,9 @@ let flashlightOn = true;
 // --- ENTITIES & ASSETS ---
 let interactables = [];
 let ghost;
+let ghostMixer; // drives the ghost model's walk animation
+let ghostWalkAction;
+let ghostGroundOffset = 4; // vertical offset from ground to the model's origin, computed once it loads
 let ghostActive = false;
 let staticIntensity = 0;
 const pageTextures = [];
@@ -289,7 +293,13 @@ function init() {
     });
 
     const onKeyDown = function (event) {
-        if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyE', 'ShiftLeft', 'ShiftRight'].includes(event.code)) {
+        // While actively playing or reading a page, swallow every keystroke
+        // before it can reach the browser — otherwise stray, non-control keys
+        // (e.g. Firefox's "/" quick-find) can pop open browser UI mid-game.
+        // Escape is excluded: it always releases pointer lock at the browser
+        // level regardless of preventDefault, so there's nothing to gain by
+        // intercepting it, and doing so could mask that native behavior.
+        if ((controls.isLocked || readingPage) && event.code !== 'Escape') {
             event.preventDefault();
         }
         if(readingPage) {
@@ -618,24 +628,40 @@ function buildEnvironment(textureLoader) {
         }
     });
 
-    // Upright (Y-axis-only) billboard instead of a THREE.Sprite: a Sprite always
-    // faces the camera on every axis, so it visibly tilts/leans as the player
-    // looks up/down or head-bobs, which reads as a flat cutout rather than a
-    // figure standing in the world. A plane that only rotates to face the
-    // player on Y stays upright, like the classic Slender-style ghost billboard.
-    const ghostTexture = textureLoader.load('assets/ghost.png'); // HD ghost sprite
-    const ghostGeo = new THREE.PlaneGeometry(4, 9);
-    const ghostMat = new THREE.MeshBasicMaterial({ map: ghostTexture, color: 0xffffff, transparent: true, side: THREE.DoubleSide });
-    ghost = new THREE.Mesh(ghostGeo, ghostMat);
-    ghost.position.set(0, 4.5, 20);
-    ghost.visible = false;
-    scene.add(ghost);
+    // Real animated 3D model instead of a flat billboard plane.
+    const gltfLoader = new GLTFLoader(loadingManager);
+    gltfLoader.load('models/ghost.glb', (gltf) => {
+        ghost = gltf.scene;
+
+        // Normalize scale from the model's actual bounding box rather than a
+        // guessed constant, since the source model's native units are unknown
+        // here. Target height chosen to loom over the player (camera eye
+        // height 1.6) similar to the old oversized billboard, without being
+        // absurd.
+        const box = new THREE.Box3().setFromObject(ghost);
+        const modelHeight = box.max.y - box.min.y;
+        const targetHeight = 4.5;
+        const scale = modelHeight > 0 ? targetHeight / modelHeight : 1;
+        ghost.scale.setScalar(scale);
+        // Distance from the model's origin down to its lowest point (feet),
+        // so positioning code can place it exactly on the ground regardless
+        // of whether the model's pivot is at its base or its center.
+        ghostGroundOffset = -box.min.y * scale;
+
+        ghost.position.set(0, ghostGroundOffset, 20);
+        ghost.visible = false;
+        scene.add(ghost);
+
+        if (gltf.animations && gltf.animations.length > 0) {
+            ghostMixer = new THREE.AnimationMixer(ghost);
+            ghostWalkAction = ghostMixer.clipAction(gltf.animations[0]);
+            ghostWalkAction.play();
+        }
+    });
 }
 
-function billboardGhostTowardsCamera() {
-    const dx = camera.position.x - ghost.position.x;
-    const dz = camera.position.z - ghost.position.z;
-    ghost.rotation.y = Math.atan2(dx, dz);
+function faceGhostTowards(dirX, dirZ) {
+    ghost.rotation.y = Math.atan2(dirX, dirZ);
 }
 
 function checkTreeCollision(x, z) {
@@ -763,8 +789,8 @@ function teleportGhost() {
     ghost.position.z = camera.position.z + Math.cos(spawnAngle) * spawnDistance;
     
     const groundY = noise.noise(ghost.position.x * 0.05, ghost.position.z * 0.05) * 5;
-    ghost.position.y = groundY + 4;
-    billboardGhostTowardsCamera();
+    ghost.position.y = groundY + ghostGroundOffset;
+    faceGhostTowards(camera.position.x - ghost.position.x, camera.position.z - ghost.position.z);
 }
 
 function updateGhostAI(delta) {
@@ -795,15 +821,20 @@ function updateGhostAI(delta) {
         // Not looking at ghost -> Ghost moves towards you!
         staticIntensity = Math.max(0, staticIntensity - 0.5 * delta);
 
-        // Move ghost towards player
+        // Move ghost towards player. NOTE: `ghostDir` points from the camera
+        // TOWARD the ghost (needed above for the "looking at it" dot-product
+        // check) — moving along it would push the ghost further away, so the
+        // actual chase direction is its negation (ghost -> camera).
+        const moveDir = ghostDir.clone().negate();
         const speed = 2.0 + (pagesCollected * 1.5);
-        const moveStep = ghostDir.clone().multiplyScalar(speed * delta);
+        const moveStep = moveDir.multiplyScalar(speed * delta);
         ghost.position.add(moveStep);
-        
+
         // Keep ghost on ground
         const groundY = noise.noise(ghost.position.x * 0.05, ghost.position.z * 0.05) * 5;
-        ghost.position.y = groundY + 4;
-        billboardGhostTowardsCamera();
+        ghost.position.y = groundY + ghostGroundOffset;
+        faceGhostTowards(moveDir.x, moveDir.z);
+        if (ghostMixer) ghostMixer.update(delta);
 
         // Teleportation mechanic: If ghost gets too far away, teleport closer behind player
         if (ghostDistance > 80) {
@@ -817,6 +848,11 @@ function updateGhostAI(delta) {
     if (noiseGain) noiseGain.gain.value = staticIntensity * 0.5 * sfxLevel; // Raw generated static
     soundStatic.setVolume(staticIntensity * 0.6 * sfxLevel); // Recorded static texture layer
     soundBreath.setVolume(staticIntensity * sfxLevel); // Breathing intensifies with fear
+
+    // Proximity cue: tension swells as the ghost draws near, even if you
+    // aren't looking at it (staring already drives static/breath above).
+    const proximity = Math.max(0, 1 - ghostDistance / 60);
+    soundTension.setVolume(Math.max(0.3, proximity) * musicVolume * masterVolume);
 }
 
 function winGame() {
@@ -854,11 +890,11 @@ function loseGame() {
         camera.position.y,
         camera.position.z + camDir.z * 2
     );
-    billboardGhostTowardsCamera();
+    faceGhostTowards(-camDir.x, -camDir.z);
 
     setTimeout(() => {
         mainMenu.innerHTML = `
-            <h1 style="color: #ff0000; font-size: 80px;" class="game-title">HE GOT YOU</h1>
+            <h1 style="color: #ff0000; font-size: 80px;" class="game-title">SHE GOT YOU</h1>
             <button onclick="location.reload()" class="menu-btn" style="margin-top: 30px;">Main Menu</button>
         `;
         showPanel('main');

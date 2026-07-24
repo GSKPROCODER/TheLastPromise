@@ -36,8 +36,9 @@ If Meera catches you, you will be trapped forever (Bad Ending).
 *   **F:** Toggle Flashlight
 
 ## Assets & 3D Models (For Developers)
-This professional build is configured with Vite and includes `GLTFLoader`. 
-While it currently uses procedural geometry for instant, zero-setup testing, you can easily swap the primitive shapes for real 3D models:
+This build is configured with Vite and uses `GLTFLoader` to load the ghost model from `public/models/ghost.glb`. To swap in a different model:
 1. Download `.gltf` or `.glb` models (e.g., from Sketchfab).
 2. Place them in the `public/models` directory.
-3. Use the instantiated `gltfLoader` in `src/main.js` to load them into the scene.
+3. Point the `gltfLoader.load(...)` call in `buildEnvironment()` (`src/main.js`) at the new file.
+
+**Current ghost model attribution**: `public/models/ghost.glb` is the "CesiumMan" sample asset from the [Khronos Group glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) repository, © 2017 Cesium, licensed [CC-BY 4.0 International](https://creativecommons.org/licenses/by/4.0/) (with trademark limitations on the Cesium logo/name). It's a free, directly-downloadable placeholder used to verify the animated-3D-model pipeline — it has a visible "Cesium" logo on its clothing texture and isn't intended as the final visual; swap in a proper ghost/character model before shipping for real.
