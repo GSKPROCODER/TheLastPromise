@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Last Promise</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="ui-layer">
+        <div id="vignette"></div>
+        <div id="crosshair"></div>
+        <div id="interact-prompt" class="hidden">Press [E] to read</div>
+        
+        <div id="hud-top">
+            <div id="agenda">
+                <strong>Objective:</strong><br/>
+                <span id="objective-text">Find 4 Diary Pages. Avoid her.</span>
+            </div>
+            <div id="inventory">
+                Pages: <span id="page-count">0</span>/4
+            </div>
+        </div>
+
+        <div id="hud-bottom">
+            <div class="bar-container">
+                <div class="bar-label">Stamina</div>
+                <div id="stamina-bar" class="bar-fill"></div>
+            </div>
+            <div class="bar-container">
+                <div class="bar-label">Flashlight Battery</div>
+                <div id="battery-bar" class="bar-fill"></div>
+            </div>
+        </div>
+        
+        <!-- Full screen page reading overlay -->
+        <div id="page-overlay" class="hidden">
+            <img id="page-overlay-img" src="/assets/page1.png" alt="Diary Page">
+            <div class="overlay-text">Click anywhere to close</div>
+        </div>
+
+        <!-- Jumpscare Static Overlay -->
+        <div id="static-overlay" style="opacity: 0;"></div>
+
+        <!-- Startup Splash Screen -->
+        <div id="splash-screen">
+            <h1 class="splash-logo">Sharma Studios</h1>
+        </div>
+
+        <div id="blocker" class="hidden">
+            <div id="main-menu">
+                <h1 class="game-title">The Last Promise</h1>
+                <div class="menu-options">
+                    <button id="start-btn" class="menu-btn">Start Game</button>
+                    <label class="checkbox-container menu-btn">
+                        <input type="checkbox" id="fullscreen-toggle">
+                        <span class="checkmark"></span> Fullscreen
+                    </label>
+                    <button class="menu-btn disabled">Options</button>
+                    <button class="menu-btn disabled">Quit</button>
+                </div>
+            </div>
+        </div>
+        
+        <div id="story-text" class="hidden"></div>
+    </div>
+    
+    <!-- Game Logic via Vite -->
+    <script type="module" src="/src/main.js"></script>
+</body>
+</html>

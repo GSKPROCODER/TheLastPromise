@@ -1,0 +1,313 @@
+body {
+    margin: 0;
+    overflow: hidden;
+    background-color: #000;
+    font-family: 'Courier New', Courier, monospace;
+    color: #fff;
+}
+
+canvas {
+    display: block;
+}
+
+#ui-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none; /* Let clicks pass through to canvas */
+}
+
+#vignette {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    box-shadow: inset 0 0 150px rgba(0,0,0,0.9);
+    pointer-events: none;
+    z-index: 5;
+}
+
+#crosshair {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 6px;
+    height: 6px;
+    background-color: white;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    transition: all 0.2s;
+    box-shadow: 0 0 5px rgba(0,0,0,0.5);
+}
+
+#crosshair.active {
+    background-color: #ff0000;
+    width: 10px;
+    height: 10px;
+    box-shadow: 0 0 10px #ff0000;
+}
+
+#interact-prompt {
+    position: absolute;
+    top: 55%;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 24px;
+    color: #ffaaaa;
+    text-shadow: 1px 1px 5px black;
+    pointer-events: none;
+    background: rgba(0,0,0,0.5);
+    padding: 5px 15px;
+    border-radius: 3px;
+    border: 1px solid #ff0000;
+}
+
+#hud-top {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    right: 20px;
+    display: flex;
+    justify-content: space-between;
+    pointer-events: none;
+}
+
+#inventory {
+    font-size: 24px;
+    background-color: rgba(0, 0, 0, 0.7);
+    padding: 15px;
+    border: 1px solid #555;
+    border-radius: 5px;
+}
+
+#agenda {
+    font-size: 18px;
+    background-color: rgba(0, 0, 0, 0.7);
+    padding: 15px;
+    border: 1px solid #aa0000;
+    border-radius: 5px;
+    color: #ffaaaa;
+    max-width: 300px;
+}
+
+#hud-bottom {
+    position: absolute;
+    bottom: 30px;
+    left: 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    pointer-events: none;
+    width: 250px;
+}
+
+.bar-container {
+    background: rgba(0,0,0,0.6);
+    border: 2px solid #333;
+    height: 20px;
+    width: 100%;
+    position: relative;
+    border-radius: 3px;
+}
+
+.bar-label {
+    position: absolute;
+    top: -20px;
+    font-size: 14px;
+    color: #ddd;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.bar-fill {
+    height: 100%;
+    width: 100%;
+    transition: width 0.1s linear;
+}
+
+#stamina-bar {
+    background-color: #2e8b57;
+}
+
+#battery-bar {
+    background-color: #ffd700;
+}
+
+#page-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.9);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    z-index: 20;
+}
+
+#page-overlay img {
+    max-height: 80%;
+    max-width: 80%;
+    box-shadow: 0 0 50px rgba(255,255,255,0.2);
+}
+
+.overlay-text {
+    margin-top: 20px;
+    font-size: 20px;
+    color: #888;
+}
+
+#static-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-image: url('/assets/static.png');
+    background-size: cover;
+    opacity: 0.8;
+    z-index: 100; /* Highest priority */
+    pointer-events: none;
+    mix-blend-mode: screen;
+}
+
+#blocker {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.85); /* Slightly darker for menu */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    pointer-events: auto;
+    transition: opacity 2s ease;
+    z-index: 10;
+    background-image: url('/assets/menu_bg.png');
+    background-size: cover;
+    background-position: center;
+}
+
+#splash-screen {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    background-color: #000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 500;
+    transition: opacity 2s ease;
+}
+
+.splash-logo {
+    color: #fff;
+    font-size: 60px;
+    letter-spacing: 15px;
+    text-transform: uppercase;
+    font-family: 'Courier New', Courier, monospace;
+    text-shadow: 0 0 20px rgba(255, 255, 255, 0.5);
+    opacity: 0;
+    animation: fadeInOut 5s forwards;
+}
+
+@keyframes fadeInOut {
+    0% { opacity: 0; filter: blur(10px); }
+    20% { opacity: 1; filter: blur(0px); }
+    80% { opacity: 1; filter: blur(0px); }
+    100% { opacity: 0; filter: blur(10px); }
+}
+
+#main-menu {
+    text-align: center;
+    background: rgba(10, 10, 10, 0.9);
+    padding: 40px;
+    border: 2px solid #550000;
+    border-radius: 10px;
+    box-shadow: 0 0 20px #ff000033;
+    max-width: 600px;
+}
+
+.game-title {
+    font-size: 56px;
+    margin-top: 0;
+    margin-bottom: 20px;
+    color: #cc0000;
+    text-shadow: 2px 2px 10px #000;
+    letter-spacing: 2px;
+}
+
+.agenda-text {
+    font-size: 16px;
+    line-height: 1.6;
+    margin-bottom: 20px;
+    color: #dddddd;
+}
+
+.controls-text {
+    font-size: 18px;
+    color: #aaaaaa;
+    margin-bottom: 30px;
+    padding: 10px;
+    border-top: 1px solid #333;
+    border-bottom: 1px solid #333;
+}
+
+.menu-options {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+}
+
+/* Fullscreen Checkbox Styling */
+.checkbox-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 18px;
+    cursor: pointer;
+}
+
+.menu-btn {
+    background-color: rgba(20,20,20,0.8);
+    color: #ccc;
+    border: 1px solid #444;
+    padding: 15px 40px;
+    font-size: 24px;
+    font-family: inherit;
+    cursor: pointer;
+    border-radius: 5px;
+    transition: all 0.2s;
+    width: 100%;
+    text-align: center;
+    display: block;
+}
+
+.menu-btn:hover:not(.disabled) {
+    background-color: #8b0000;
+    border-color: #ff0000;
+    color: white;
+    box-shadow: 0 0 15px #ff0000;
+}
+
+.menu-btn.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+#story-text {
+    position: absolute;
+    bottom: 10%;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 24px;
+    background-color: rgba(0, 0, 0, 0.7);
+    padding: 15px 30px;
+    border: 1px solid #555;
+    border-radius: 5px;
+    text-align: center;
+    max-width: 80%;
+    transition: opacity 0.5s;
+}
+
+.hidden {
+    display: none !important;
+}
