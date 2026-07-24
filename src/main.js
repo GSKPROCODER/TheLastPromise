@@ -25,7 +25,6 @@ let readingPage = false;
 let pendingPage = null; // Track page being read
 let headBobTimer = 0;
 let gameStarted = false;
-let audioContextResumed = false; // becomes true on the player's first click/keypress anywhere
 
 // --- ACCURATE MECHANICS ---
 let stamina = 100;
@@ -152,8 +151,6 @@ function init() {
     function resumeAudioContext() {
         const ctx = THREE.AudioContext.getContext();
         if (ctx.state === 'suspended') ctx.resume();
-        audioContextResumed = true;
-        tryPlayIntro();
     }
     document.addEventListener('pointerdown', resumeAudioContext, { once: true });
     document.addEventListener('keydown', resumeAudioContext, { once: true });
@@ -432,7 +429,8 @@ function loadAssets() {
     audioLoader.load('assets/intro.mp3', function(buffer) {
         soundIntro.setBuffer(buffer);
         registerMusic(soundIntro, 0.8);
-        tryPlayIntro();
+        // Not auto-played: it read as an unexplained "footstep-like" sound
+        // showing up in the main menu with no clear trigger.
     });
     const stageFiles = ['stage1.mp3', 'stage2.mp3', 'stage3.mp3', 'stage4.mp3'];
     stageFiles.forEach((file, i) => {
@@ -524,20 +522,6 @@ function updateStageMusic(pages) {
     if (currentStage >= 0) fadeOutAndStop(stageTracks[currentStage]);
     fadeIn(stageTracks[idx]);
     currentStage = idx;
-}
-
-function tryPlayIntro() {
-    // Only ever plays as a menu-time cue: the AudioContext can't produce
-    // sound until the player's first click/keypress resumes it, which may
-    // happen well after intro.mp3 has already loaded (or well after the
-    // splash/menu has been showing) — playing unconditionally in the load
-    // callback meant this could suddenly become audible at an arbitrary,
-    // unrelated later moment (in the menu, or partway into gameplay). Skip
-    // entirely once the game has actually started rather than let it bleed
-    // into play.
-    if (audioContextResumed && soundIntro.buffer && !gameStarted && !soundIntro.isPlaying) {
-        soundIntro.play();
-    }
 }
 
 function playMenuMusic() {
@@ -842,8 +826,13 @@ function updateGhostAI(delta) {
     const lookDir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
     const dot = lookDir.dot(ghostDir);
     
-    // Check if looking at ghost
-    const isLookingAtGhost = dot > 0.6 && ghostDistance < 60; 
+    // Check if looking at ghost. No distance cap here: with one (60 units),
+    // the ghost was unstoppable by staring whenever it was farther out than
+    // that (e.g. right after a teleport, which can spawn it up to 80 units
+    // away) — it would keep closing the distance regardless of the player's
+    // behavior until it happened to cross under 60, which read as "it got me
+    // even when I was looking right at it."
+    const isLookingAtGhost = dot > 0.6;
 
     if(isLookingAtGhost) {
         // Staring at ghost -> Static builds up!
