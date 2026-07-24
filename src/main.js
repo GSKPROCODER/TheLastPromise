@@ -654,6 +654,13 @@ function buildEnvironment(textureLoader) {
 
         ghost.traverse((child) => {
             if (child.isMesh && child.material) {
+                // Skinned/animated meshes keep their bind-pose bounding volume
+                // for frustum culling, which doesn't track how the animation
+                // actually moves the geometry — up close this can cull parts
+                // of the model (e.g. everything but the feet, near the
+                // object's origin) even though they're plainly in view.
+                child.frustumCulled = false;
+
                 const mats = Array.isArray(child.material) ? child.material : [child.material];
                 mats.forEach((mat) => {
                     mat.color = new THREE.Color(0xdde8ee); // pale, cold ghostly tint
