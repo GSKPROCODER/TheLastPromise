@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { FilmPass } from 'three/examples/jsm/postprocessing/FilmPass.js';
@@ -57,6 +58,7 @@ const GRASS_CELL = 0.5;          // world spacing between grass cells (smaller =
 const GRASS_RADIUS = 34;         // how far grass extends around the player
 let bloomPass = null, gtaoPass = null; // graphics-effect passes (toggled in Settings)
 let sceneFog = null;             // the FogExp2 instance (attached/detached by the fog toggle)
+let staticCtx = null, staticImg = null; // animated TV-static overlay canvas
 
 // Effect toggle state (balanced defaults; AO off — it's the heaviest)
 let fxBloom = true, fxShadows = true, fxFog = true, fxAO = false;
@@ -428,6 +430,13 @@ function init() {
     noiseGain.connect(audioCtx.destination);
     whiteNoise.start();
 
+    // Animated TV-static overlay: a small noise buffer redrawn each frame and
+    // CSS-upscaled, instead of a single frozen PNG.
+    staticOverlay.width = 320;
+    staticOverlay.height = 180;
+    staticCtx = staticOverlay.getContext('2d');
+    staticImg = staticCtx.createImageData(staticOverlay.width, staticOverlay.height);
+
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -551,15 +560,18 @@ function loadAssets() {
         pageTextures.push(textureLoader.load(`assets/page${i}.png`));
     }
 
-    // Skybox
-    const cubeTextureLoader = new THREE.CubeTextureLoader(loadingManager);
-    cubeTextureLoader.setPath('assets/sky1/');
-    const skybox = cubeTextureLoader.load([
-        'right.png', 'left.png',
-        'top.png', 'bottom.png',
-        'front.png', 'back.png'
-    ]);
-    scene.background = skybox;
+    // High-res HDRI skybox (equirectangular) — replaces the low-res cube faces.
+    // HDR gives the stormy sky real dynamic range and drives subtle image-based
+    // lighting via scene.environment.
+    const rgbeLoader = new RGBELoader(loadingManager);
+    rgbeLoader.load('hdri/sky.hdr', (hdrTex) => {
+        hdrTex.mapping = THREE.EquirectangularReflectionMapping;
+        scene.background = hdrTex;
+        scene.backgroundIntensity = 1.0; // night sky is already dark; don't crush it to black
+        // Not used as scene.environment: keeps lighting controlled by the
+        // tuned ambient/moonlight/flashlight (and avoids version-dependent
+        // environment-intensity surprises I can't preview here).
+    });
 
     buildEnvironment(textureLoader);
 }
@@ -743,18 +755,20 @@ function addWindToMaterial(mat, opts = {}) {
 function buildForest(barkTexture) {
     const numTrees = 900, forestRadius = 150;
 
-    const trunkGeo = new THREE.CylinderGeometry(0.16, 0.42, 6, 8, 5);
-    trunkGeo.translate(0, 3, 0); // base at y=0
+    // Taller trunk with more girth so trees read as full-size, not stubby.
+    const TRUNK_H = 9, TRUNK_BASE_R = 0.55, TRUNK_TOP_R = 0.22;
+    const trunkGeo = new THREE.CylinderGeometry(TRUNK_TOP_R, TRUNK_BASE_R, TRUNK_H, 8, 5);
+    trunkGeo.translate(0, TRUNK_H / 2, 0); // base at y=0
     const trunkMat = new THREE.MeshStandardMaterial({ map: barkTexture, color: 0x2f2519, roughness: 1.0, metalness: 0.0 });
 
     // Dark, desaturated conifer green with flat shading (facets read as
     // natural clumps, not a smooth lime lollipop). Per-tree tint variation
     // added below via instanceColor so the forest isn't one uniform green.
     const foliageMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1.0, metalness: 0.0, flatShading: true });
-    addWindToMaterial(foliageMat, { minY: 3.0, maxY: 12.0, amp: 0.4 });
-    // More, tighter tiers with slight overlap → fuller pine silhouette.
+    addWindToMaterial(foliageMat, { minY: 6.0, maxY: 15.0, amp: 0.5 });
+    // Tiered canopy sitting high on the tall trunk (leaves plenty of visible bark).
     const cone = (r, h, y) => { const g = new THREE.ConeGeometry(r, h, 8, 3); g.translate(0, y, 0); return g; };
-    const foliageParts = [cone(2.7, 3.4, 4.6), cone(2.3, 3.2, 6.2), cone(1.8, 3.0, 7.8), cone(1.2, 2.6, 9.4)];
+    const foliageParts = [cone(3.2, 4.5, 7.0), cone(2.7, 4.0, 9.2), cone(2.1, 3.6, 11.2), cone(1.4, 3.0, 13.0)];
 
     const matrices = [];
     const treeColors = [];
@@ -765,7 +779,7 @@ function buildForest(barkTexture) {
         const r = 12 + Math.random() * (forestRadius - 12);
         const th = Math.random() * Math.PI * 2;
         const x = r * Math.cos(th), z = r * Math.sin(th);
-        const s = 0.8 + Math.random() * 0.7;
+        const s = 1.1 + Math.random() * 0.9; // bigger trees (was 0.8–1.5)
         dummy.position.set(x, terrainHeight(x, z), z);
         dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
         dummy.scale.setScalar(s);
@@ -774,8 +788,8 @@ function buildForest(barkTexture) {
         // Dark green with per-tree hue/lightness jitter (multiplied onto foliage)
         baseGreen.setHSL(0.26 + Math.random() * 0.05, 0.35 + Math.random() * 0.15, 0.10 + Math.random() * 0.06);
         treeColors.push(baseGreen.clone());
-        treeTransforms.push({ x, z });
-        treeColliders.push({ x, z, radius: Math.max(0.5, 0.45 * s) });
+        treeTransforms.push({ x, z, s });
+        treeColliders.push({ x, z, radius: Math.max(0.6, TRUNK_BASE_R * s) });
     }
 
     const makeIM = (geo, mat, perInstanceColor) => {
@@ -794,15 +808,20 @@ function buildForest(barkTexture) {
     makeIM(trunkGeo, trunkMat, false);
     foliageParts.forEach((g) => makeIM(g, foliageMat, true));
 
-    // Pages on 4 random trees (same interact/collect flow as before)
+    // Pages pinned flush to a trunk (was floating in mid-air): offset by the
+    // trunk's actual world radius at page height so the sheet sits on the bark.
     const shuffled = [...treeTransforms].sort(() => 0.5 - Math.random());
-    const pageGeo = new THREE.PlaneGeometry(0.4, 0.6);
+    const pageGeo = new THREE.PlaneGeometry(0.5, 0.72);
     for (let i = 0; i < totalPages; i++) {
         const t = shuffled[i];
+        const pageH = 1.6; // eye-ish height on the trunk
+        const localY = pageH / t.s;
+        const trunkR = (TRUNK_BASE_R + (TRUNK_TOP_R - TRUNK_BASE_R) * (localY / TRUNK_H)) * t.s; // tapered radius at that height
+        const offset = trunkR + 0.06; // just off the bark
+        const angle = Math.atan2(-t.z, -t.x); // face toward world origin (where the player starts)
         const pageMat = new THREE.MeshBasicMaterial({ map: pageTextures[i], side: THREE.DoubleSide });
         const page = new THREE.Mesh(pageGeo, pageMat);
-        const angle = Math.atan2(-t.z, -t.x);
-        page.position.set(t.x + Math.cos(angle) * 1.3, terrainHeight(t.x, t.z) + 1.6, t.z + Math.sin(angle) * 1.3);
+        page.position.set(t.x + Math.cos(angle) * offset, terrainHeight(t.x, t.z) + pageH, t.z + Math.sin(angle) * offset);
         page.rotation.y = -angle + Math.PI / 2;
         page.userData = { type: 'note', id: i + 1, textureUrl: `assets/page${i + 1}.png` };
         scene.add(page);
@@ -928,6 +947,20 @@ function repositionGrass(px, pz) {
 
 function faceGhostTowards(dirX, dirZ) {
     ghost.rotation.y = Math.atan2(dirX, dirZ);
+}
+
+// Draw a fresh frame of TV static into the overlay canvas and set its opacity.
+function drawStatic(intensity) {
+    const a = Math.min(Math.max(intensity, 0), 1);
+    staticOverlay.style.opacity = a;
+    if (!staticCtx || a <= 0.002) return;
+    const d = staticImg.data;
+    for (let i = 0; i < d.length; i += 4) {
+        const v = Math.random() * 255;
+        d[i] = d[i + 1] = d[i + 2] = v;
+        d[i + 3] = 255;
+    }
+    staticCtx.putImageData(staticImg, 0, 0);
 }
 
 function checkTreeCollision(x, z) {
@@ -1068,12 +1101,22 @@ function updateGhostAI(delta) {
     const isLookingAtGhost = lookDir.dot(ghostDir) > 0.55;
 
     if (isLookingAtGhost) {
-        // Watched → she freezes and dread builds. Faster when close / later game.
-        const proximityFactor = 1 + Math.max(0, 40 - ghostDistance) / 20; // up to ~3x point-blank
-        const buildupRate = (0.12 + pagesCollected * 0.05) * proximityFactor;
-        staticIntensity += buildupRate * delta;
-        ghostTeleportTimer = 0; // lingers in view while stared at
-        if (staticIntensity >= 1.0) loseGame();
+        if (battery <= 0) {
+            // Flashlight battery fully dead → no light left to hold her off;
+            // the moment she's in view she takes you.
+            staticIntensity = 1.0;
+            loseGame();
+        } else {
+            // Watched → she freezes and dread builds SLOWLY: staring ~45s kills
+            // you early game (0→1). Faster up close / later game; but staring
+            // in the dark (flashlight off) builds slower, buying you more time.
+            const proximityFactor = 1 + Math.max(0, 30 - ghostDistance) / 30; // 1x far → up to 2x point-blank
+            const lightFactor = flashlightOn ? 1.0 : 0.5; // dark = slower dread
+            const buildupRate = (0.022 + pagesCollected * 0.012) * proximityFactor * lightFactor;
+            staticIntensity += buildupRate * delta;
+            ghostTeleportTimer = 0; // lingers in view while stared at
+            if (staticIntensity >= 1.0) loseGame();
+        }
     } else {
         // Not watched → dread fades and she repositions on a timer (no chase).
         staticIntensity = Math.max(0, staticIntensity - 0.45 * delta);
@@ -1086,7 +1129,7 @@ function updateGhostAI(delta) {
     }
 
     // Static visuals + audio (scaled by SFX/master volume)
-    staticOverlay.style.opacity = Math.min(staticIntensity, 1.0);
+    drawStatic(staticIntensity);
     const sfxLevel = sfxVolume * masterVolume;
     if (noiseGain) noiseGain.gain.value = staticIntensity * 0.5 * sfxLevel;
     soundStatic.setVolume(staticIntensity * 0.6 * sfxLevel);
@@ -1122,7 +1165,7 @@ function loseGame() {
     if(!soundFail.isPlaying) soundFail.play();
     if(!soundCrash.isPlaying) soundCrash.play();
     if(!soundZoom.isPlaying) soundZoom.play();
-    staticOverlay.style.opacity = 1.0;
+    drawStatic(1.0);
     
     // Teleport ghost in front of face
     const camDir = new THREE.Vector3();
