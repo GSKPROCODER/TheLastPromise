@@ -207,11 +207,13 @@ function init() {
 
     startBtn.addEventListener('click', function () {
         if(startBtn.classList.contains('disabled')) return;
+        resumeAudioContext();
         gameStarted = true;
         controls.lock();
     });
 
     resumeBtn.addEventListener('click', function () {
+        resumeAudioContext();
         controls.lock();
     });
 
