@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { FilmPass } from 'three/examples/jsm/postprocessing/FilmPass.js';
@@ -560,18 +559,16 @@ function loadAssets() {
         pageTextures.push(textureLoader.load(`assets/page${i}.png`));
     }
 
-    // High-res HDRI skybox (equirectangular) — replaces the low-res cube faces.
-    // HDR gives the stormy sky real dynamic range and drives subtle image-based
-    // lighting via scene.environment.
-    const rgbeLoader = new RGBELoader(loadingManager);
-    rgbeLoader.load('hdri/sky.hdr', (hdrTex) => {
-        hdrTex.mapping = THREE.EquirectangularReflectionMapping;
-        scene.background = hdrTex;
-        scene.backgroundIntensity = 1.0; // night sky is already dark; don't crush it to black
-        // Not used as scene.environment: keeps lighting controlled by the
-        // tuned ambient/moonlight/flashlight (and avoids version-dependent
-        // environment-intensity surprises I can't preview here).
-    });
+    // Original gloomy cloud skybox (kept per preference; no higher-res version
+    // of this specific sky exists to swap in).
+    const cubeTextureLoader = new THREE.CubeTextureLoader(loadingManager);
+    cubeTextureLoader.setPath('assets/sky1/');
+    const skybox = cubeTextureLoader.load([
+        'right.png', 'left.png',
+        'top.png', 'bottom.png',
+        'front.png', 'back.png'
+    ]);
+    scene.background = skybox;
 
     buildEnvironment(textureLoader);
 }
