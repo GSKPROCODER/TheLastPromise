@@ -213,16 +213,21 @@ function init() {
     raycaster.near = 0.1;
     raycaster.far = 3.5;
 
-    const ambientLight = new THREE.AmbientLight(0x444444); // Dimmer ambient light for horror atmosphere
+    // Low, cool ambient so the scene is night-dark and flashlight-driven
+    // (the old flat 0x444444 lit everything evenly and killed the mood).
+    const ambientLight = new THREE.AmbientLight(0x3a4256, 0.35);
     scene.add(ambientLight);
+    // Dim cool "moonlight" from above gives trees form/shape beyond the
+    // flashlight, instead of flat ambient fill. No shadows (perf).
+    const moonLight = new THREE.DirectionalLight(0x9fb0d0, 0.35);
+    moonLight.position.set(-40, 80, -30);
+    scene.add(moonLight);
 
-    // Three.js r155+ uses physically-correct (candela) light units by default, which
-    // divide point/spot light intensity by an extra 4*PI steradians compared to the
-    // old model this value (4.5) was tuned for — at this scale it renders as
-    // essentially invisible. Multiplying by 4*PI restores the originally-intended
-    // brightness under the current renderer.
-    const flashlightIntensity = 4.5 * 4 * Math.PI;
-    flashlight = new THREE.SpotLight(0xffeedd, flashlightIntensity, 120, Math.PI / 4, 0.5, 1);
+    // Three.js r155+ uses physically-correct (candela) light units. The 4*PI
+    // factor restores usable brightness; kept moderate so the beam lights the
+    // path without blowing nearby grass/foliage out to a glow.
+    const flashlightIntensity = 2.4 * 4 * Math.PI;
+    flashlight = new THREE.SpotLight(0xffe9c8, flashlightIntensity, 90, Math.PI / 5, 0.6, 1.4);
     flashlight.position.set(0, 0, 0);
     flashlight.target.position.set(0, 0, -1);
     // Dynamic shadows through the trees (toggleable in Settings).
@@ -427,7 +432,7 @@ function init() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.toneMapping = THREE.ACESFilmicToneMapping; // cinematic filmic color
-    renderer.toneMappingExposure = 1.05;
+    renderer.toneMappingExposure = 0.85;
     renderer.shadowMap.enabled = fxShadows;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     document.body.appendChild(renderer.domElement);
@@ -442,7 +447,7 @@ function init() {
     gtaoPass.enabled = fxAO;
     composer.addPass(gtaoPass);
 
-    bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 0.45, 0.4, 0.85); // strength, radius, threshold
+    bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 0.22, 0.5, 0.95); // strength, radius, threshold (high threshold: only true highlights bloom, not lit grass)
     bloomPass.enabled = fxBloom;
     composer.addPass(bloomPass);
 
@@ -738,18 +743,24 @@ function addWindToMaterial(mat, opts = {}) {
 function buildForest(barkTexture) {
     const numTrees = 900, forestRadius = 150;
 
-    const trunkGeo = new THREE.CylinderGeometry(0.18, 0.5, 6, 10, 6);
+    const trunkGeo = new THREE.CylinderGeometry(0.16, 0.42, 6, 8, 5);
     trunkGeo.translate(0, 3, 0); // base at y=0
-    const trunkMat = new THREE.MeshStandardMaterial({ map: barkTexture, color: 0x6b5844, roughness: 1.0, metalness: 0.0 });
+    const trunkMat = new THREE.MeshStandardMaterial({ map: barkTexture, color: 0x2f2519, roughness: 1.0, metalness: 0.0 });
 
-    const foliageMat = new THREE.MeshStandardMaterial({ color: 0x2c3f2a, roughness: 1.0, metalness: 0.0 });
-    addWindToMaterial(foliageMat, { minY: 3.0, maxY: 11.0, amp: 0.4 });
-    const cone = (r, h, y) => { const g = new THREE.ConeGeometry(r, h, 9, 4); g.translate(0, y, 0); return g; };
-    const foliageParts = [cone(2.6, 4, 5.5), cone(2.1, 3.6, 7.5), cone(1.5, 3, 9.3)];
+    // Dark, desaturated conifer green with flat shading (facets read as
+    // natural clumps, not a smooth lime lollipop). Per-tree tint variation
+    // added below via instanceColor so the forest isn't one uniform green.
+    const foliageMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1.0, metalness: 0.0, flatShading: true });
+    addWindToMaterial(foliageMat, { minY: 3.0, maxY: 12.0, amp: 0.4 });
+    // More, tighter tiers with slight overlap → fuller pine silhouette.
+    const cone = (r, h, y) => { const g = new THREE.ConeGeometry(r, h, 8, 3); g.translate(0, y, 0); return g; };
+    const foliageParts = [cone(2.7, 3.4, 4.6), cone(2.3, 3.2, 6.2), cone(1.8, 3.0, 7.8), cone(1.2, 2.6, 9.4)];
 
     const matrices = [];
+    const treeColors = [];
     const treeTransforms = [];
     const dummy = new THREE.Object3D();
+    const baseGreen = new THREE.Color();
     for (let i = 0; i < numTrees; i++) {
         const r = 12 + Math.random() * (forestRadius - 12);
         const th = Math.random() * Math.PI * 2;
@@ -760,21 +771,28 @@ function buildForest(barkTexture) {
         dummy.scale.setScalar(s);
         dummy.updateMatrix();
         matrices.push(dummy.matrix.clone());
+        // Dark green with per-tree hue/lightness jitter (multiplied onto foliage)
+        baseGreen.setHSL(0.26 + Math.random() * 0.05, 0.35 + Math.random() * 0.15, 0.10 + Math.random() * 0.06);
+        treeColors.push(baseGreen.clone());
         treeTransforms.push({ x, z });
-        treeColliders.push({ x, z, radius: Math.max(0.5, 0.5 * s) });
+        treeColliders.push({ x, z, radius: Math.max(0.5, 0.45 * s) });
     }
 
-    const makeIM = (geo, mat) => {
+    const makeIM = (geo, mat, perInstanceColor) => {
         const im = new THREE.InstancedMesh(geo, mat, matrices.length);
         matrices.forEach((m, idx) => im.setMatrixAt(idx, m));
         im.instanceMatrix.needsUpdate = true;
+        if (perInstanceColor) {
+            treeColors.forEach((c, idx) => im.setColorAt(idx, c));
+            if (im.instanceColor) im.instanceColor.needsUpdate = true;
+        }
         im.castShadow = true;
         im.receiveShadow = true;
         im.frustumCulled = false;
         scene.add(im);
     };
-    makeIM(trunkGeo, trunkMat);
-    foliageParts.forEach((g) => makeIM(g, foliageMat));
+    makeIM(trunkGeo, trunkMat, false);
+    foliageParts.forEach((g) => makeIM(g, foliageMat, true));
 
     // Pages on 4 random trees (same interact/collect flow as before)
     const shuffled = [...treeTransforms].sort(() => 0.5 - Math.random());
@@ -853,20 +871,26 @@ function buildGrass() {
         }
     }
 
-    const BLADE_H = 0.32;
-    const g = new THREE.PlaneGeometry(0.07, BLADE_H, 1, 4);
+    const BLADE_H = 0.34, BLADE_W = 0.055;
+    const g = new THREE.PlaneGeometry(BLADE_W, BLADE_H, 1, 4);
     g.translate(0, BLADE_H / 2, 0); // base at y=0
+    // Taper each blade to a point at the tip (real grass, not rectangles) and
+    // give a dark natural green root->tip gradient. Kept dark/low-value so the
+    // flashlight doesn't blow it out to a glow.
     const colors = [];
     const posA = g.attributes.position;
     for (let i = 0; i < posA.count; i++) {
         const t = posA.getY(i) / BLADE_H; // 0 root -> 1 tip
-        const c = new THREE.Color().setHSL(0.27, 0.55, 0.10 + 0.22 * t);
+        posA.setX(i, posA.getX(i) * (1.0 - t * 0.85)); // narrow toward tip
+        const c = new THREE.Color().setHSL(0.25 + t * 0.02, 0.45, 0.05 + 0.10 * t);
         colors.push(c.r, c.g, c.b);
     }
+    posA.needsUpdate = true;
+    g.computeVertexNormals();
     g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
 
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1.0, metalness: 0.0, side: THREE.DoubleSide });
-    addWindToMaterial(mat, { minY: 0.0, maxY: BLADE_H, amp: 0.06 });
+    addWindToMaterial(mat, { minY: 0.0, maxY: BLADE_H, amp: 0.05 });
 
     grassMesh = new THREE.InstancedMesh(g, mat, grassBlades.length);
     grassMesh.castShadow = false;
