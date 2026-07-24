@@ -42,7 +42,19 @@ const treeColliders = []; // {x, z, radius} — populated once tree1.obj finishe
 const splashScreen = document.getElementById('splash-screen');
 const blocker = document.getElementById('blocker');
 const mainMenu = document.getElementById('main-menu');
+const pauseMenu = document.getElementById('pause-menu');
+const settingsPanel = document.getElementById('settings-panel');
 const startBtn = document.getElementById('start-btn');
+const resumeBtn = document.getElementById('resume-btn');
+const restartBtn = document.getElementById('restart-btn');
+const quitBtn = document.getElementById('quit-btn');
+const mainSettingsBtn = document.getElementById('main-settings-btn');
+const pauseSettingsBtn = document.getElementById('pause-settings-btn');
+const settingsBackBtn = document.getElementById('settings-back-btn');
+const masterVolumeSlider = document.getElementById('master-volume-slider');
+const musicVolumeSlider = document.getElementById('music-volume-slider');
+const sfxVolumeSlider = document.getElementById('sfx-volume-slider');
+const sensitivitySlider = document.getElementById('sensitivity-slider');
 const fullscreenToggle = document.getElementById('fullscreen-toggle');
 const storyText = document.getElementById('story-text');
 const pageCountDisplay = document.getElementById('page-count');
@@ -55,6 +67,15 @@ const pageOverlay = document.getElementById('page-overlay');
 const pageOverlayImg = document.getElementById('page-overlay-img');
 const staticOverlay = document.getElementById('static-overlay');
 
+// --- PANEL NAVIGATION ---
+let settingsReturnTo = 'main'; // which panel Settings' Back button returns to
+
+function showPanel(name) {
+    mainMenu.classList.toggle('hidden', name !== 'main');
+    pauseMenu.classList.toggle('hidden', name !== 'pause');
+    settingsPanel.classList.toggle('hidden', name !== 'settings');
+}
+
 // --- AUDIO ---
 const listener = new THREE.AudioListener();
 let noiseGain; // For static audio
@@ -63,7 +84,51 @@ const soundFootstep = new THREE.Audio(listener);
 const soundPickup = new THREE.Audio(listener);
 const soundFail = new THREE.Audio(listener);
 const soundStatic = new THREE.Audio(listener);
+const soundMenu = new THREE.Audio(listener);
+const soundIntro = new THREE.Audio(listener);
+const soundStage1 = new THREE.Audio(listener);
+const soundStage2 = new THREE.Audio(listener);
+const soundStage3 = new THREE.Audio(listener);
+const soundStage4 = new THREE.Audio(listener);
+const stageTracks = [soundStage1, soundStage2, soundStage3, soundStage4];
+let currentStage = -1;
+const soundTension = new THREE.Audio(listener);
+const soundBreath = new THREE.Audio(listener);
+const soundFlashlight = new THREE.Audio(listener);
+const soundPageOpen = new THREE.Audio(listener);
+const soundCrash = new THREE.Audio(listener);
+const soundZoom = new THREE.Audio(listener);
+const stepBuffers = [];
+const staticBuffers = [];
 const audioLoader = new THREE.AudioLoader();
+
+// --- SETTINGS STATE ---
+let masterVolume = 1.0;
+let musicVolume = 1.0;
+let sfxVolume = 1.0;
+const musicBaseVolumes = new Map(); // sound -> its designed base volume
+const sfxBaseVolumes = new Map();
+
+function registerMusic(sound, base) {
+    musicBaseVolumes.set(sound, base);
+    sound.setVolume(base * musicVolume * masterVolume);
+}
+
+function registerSfx(sound, base) {
+    sfxBaseVolumes.set(sound, base);
+    sound.setVolume(base * sfxVolume * masterVolume);
+}
+
+function getEffectiveVolume(sound) {
+    if (musicBaseVolumes.has(sound)) return musicBaseVolumes.get(sound) * musicVolume * masterVolume;
+    if (sfxBaseVolumes.has(sound)) return sfxBaseVolumes.get(sound) * sfxVolume * masterVolume;
+    return sound.getVolume();
+}
+
+function applyVolumes() {
+    musicBaseVolumes.forEach((base, sound) => sound.setVolume(base * musicVolume * masterVolume));
+    sfxBaseVolumes.forEach((base, sound) => sound.setVolume(base * sfxVolume * masterVolume));
+}
 
 const loadingManager = new THREE.LoadingManager();
 loadingManager.onLoad = function () {
@@ -75,13 +140,29 @@ init();
 animate();
 
 function init() {
+    // Browsers suspend the shared AudioContext until a genuine user gesture
+    // resumes it. Resume on the very first interaction anywhere on the page
+    // (not tied to any specific button) so menu music and gameplay audio are
+    // reliably audible as early as the browser's autoplay policy allows.
+    function resumeAudioContext() {
+        const ctx = THREE.AudioContext.getContext();
+        if (ctx.state === 'suspended') ctx.resume();
+    }
+    document.addEventListener('pointerdown', resumeAudioContext, { once: true });
+    document.addEventListener('keydown', resumeAudioContext, { once: true });
+
     // --- SPLASH SCREEN ---
     setTimeout(() => {
         if(splashScreen) {
+            // Unhide the menu (and start its music) BEFORE the splash fade
+            // begins, not after: #blocker sits invisible behind the still-
+            // opaque splash (higher z-index) and is what gets revealed as the
+            // splash fades, instead of a flash of the raw 3D scene underneath.
+            blocker.classList.remove('hidden');
+            playMenuMusic();
             splashScreen.style.opacity = '0';
             setTimeout(() => {
                 splashScreen.style.display = 'none';
-                blocker.classList.remove('hidden');
             }, 2000);
         }
     }, 4500);
@@ -106,7 +187,13 @@ function init() {
     const ambientLight = new THREE.AmbientLight(0x444444); // Dimmer ambient light for horror atmosphere
     scene.add(ambientLight);
 
-    flashlight = new THREE.SpotLight(0xffeedd, 4.5, 120, Math.PI / 4, 0.5, 1); // Reduced flashlight intensity and range
+    // Three.js r155+ uses physically-correct (candela) light units by default, which
+    // divide point/spot light intensity by an extra 4*PI steradians compared to the
+    // old model this value (4.5) was tuned for — at this scale it renders as
+    // essentially invisible. Multiplying by 4*PI restores the originally-intended
+    // brightness under the current renderer.
+    const flashlightIntensity = 4.5 * 4 * Math.PI;
+    flashlight = new THREE.SpotLight(0xffeedd, flashlightIntensity, 120, Math.PI / 4, 0.5, 1);
     flashlight.position.set(0, 0, 0);
     flashlight.target.position.set(0, 0, -1);
     camera.add(flashlight);
@@ -117,25 +204,65 @@ function init() {
     startBtn.addEventListener('click', function () {
         if(startBtn.classList.contains('disabled')) return;
         gameStarted = true;
-        document.querySelector('.game-title').innerText = "Game Paused";
-        startBtn.innerText = "Resume Game";
+        controls.lock();
+    });
 
-        // Request fullscreen (if enabled) and only ask for pointer lock once that
-        // settles — requesting both at once can make the browser silently deny
-        // the lock, leaving the menu stuck on screen.
-        if (fullscreenToggle.checked && !document.fullscreenElement) {
-            document.documentElement.requestFullscreen()
-                .catch(err => console.log(err))
-                .finally(() => controls.lock());
-        } else {
-            controls.lock();
+    resumeBtn.addEventListener('click', function () {
+        controls.lock();
+    });
+
+    restartBtn.addEventListener('click', function () {
+        location.reload();
+    });
+
+    quitBtn.addEventListener('click', function () {
+        location.reload();
+    });
+
+    mainSettingsBtn.addEventListener('click', function () {
+        settingsReturnTo = 'main';
+        showPanel('settings');
+    });
+
+    pauseSettingsBtn.addEventListener('click', function () {
+        settingsReturnTo = 'pause';
+        showPanel('settings');
+    });
+
+    settingsBackBtn.addEventListener('click', function () {
+        showPanel(settingsReturnTo);
+    });
+
+    fullscreenToggle.addEventListener('change', function () {
+        if (fullscreenToggle.checked) {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(err => console.log(err));
+            }
+        } else if (document.fullscreenElement) {
+            document.exitFullscreen().catch(err => console.log(err));
         }
     });
 
+    masterVolumeSlider.addEventListener('input', function () {
+        masterVolume = masterVolumeSlider.value / 100;
+        applyVolumes();
+    });
+    musicVolumeSlider.addEventListener('input', function () {
+        musicVolume = musicVolumeSlider.value / 100;
+        applyVolumes();
+    });
+    sfxVolumeSlider.addEventListener('input', function () {
+        sfxVolume = sfxVolumeSlider.value / 100;
+        applyVolumes();
+    });
+    sensitivitySlider.addEventListener('input', function () {
+        controls.pointerSpeed = sensitivitySlider.value / 100;
+    });
+
     controls.addEventListener('lock', function () {
-        mainMenu.style.display = 'none';
         blocker.style.display = 'none';
-        if(!soundAmbience.isPlaying) soundAmbience.play();
+        stopMenuMusic();
+        if (currentStage < 0) updateStageMusic(0); // first time gameplay actually starts
     });
 
     controls.addEventListener('unlock', function () {
@@ -148,17 +275,17 @@ function init() {
 
         if (gameStarted && !isGameOver && !readingPage) {
             blocker.style.display = 'flex';
-            mainMenu.style.display = 'block';
+            showPanel('pause');
             if(soundFootstep.isPlaying) soundFootstep.pause();
+            playMenuMusic();
         }
     });
 
     // If the browser refuses pointer lock (e.g. re-locking too soon after
     // Escape, or a permissions/iframe restriction), don't leave the player
-    // stuck looking at a menu that appears unresponsive.
+    // stuck — the blocker/panel that was already showing simply stays put.
     document.addEventListener('pointerlockerror', function () {
         blocker.style.display = 'flex';
-        mainMenu.style.display = 'block';
     });
 
     const onKeyDown = function (event) {
@@ -183,10 +310,12 @@ function init() {
             case 'ArrowRight': case 'KeyD': moveRight = true; break;
             case 'ShiftLeft': case 'ShiftRight': sprint = true; break;
             case 'KeyE': interact(); break;
-            case 'KeyF': 
+            case 'KeyF':
                 if(battery > 0) {
                     flashlightOn = !flashlightOn;
                     flashlight.visible = flashlightOn;
+                    if (soundFlashlight.isPlaying) soundFlashlight.stop();
+                    soundFlashlight.play();
                 }
                 break;
         }
@@ -248,26 +377,83 @@ function loadAssets() {
     audioLoader.load('assets/ambience.mp3', function(buffer) {
         soundAmbience.setBuffer(buffer);
         soundAmbience.setLoop(true);
-        soundAmbience.setVolume(0.4);
+        registerMusic(soundAmbience, 0.4);
     });
     audioLoader.load('assets/step1.mp3', function(buffer) {
         soundFootstep.setBuffer(buffer);
         soundFootstep.setLoop(false);
-        soundFootstep.setVolume(1.0);
+        registerSfx(soundFootstep, 1.0);
+        stepBuffers.push(buffer);
     });
+    for (let i = 2; i <= 12; i++) {
+        audioLoader.load(`assets/step${i}.mp3`, function(buffer) {
+            stepBuffers.push(buffer);
+        });
+    }
     audioLoader.load('assets/_fail_.ogg', function(buffer) {
         soundFail.setBuffer(buffer);
-        soundFail.setVolume(1.0);
+        registerSfx(soundFail, 1.0);
     });
     audioLoader.load('assets/static1.mp3', function(buffer) {
         soundStatic.setBuffer(buffer);
         soundStatic.setLoop(true);
         soundStatic.setVolume(0);
         soundStatic.play();
+        staticBuffers.push(buffer);
+    });
+    audioLoader.load('assets/static2.mp3', function(buffer) {
+        staticBuffers.push(buffer);
+    });
+    audioLoader.load('assets/static3.mp3', function(buffer) {
+        staticBuffers.push(buffer);
     });
     audioLoader.load('assets/pickup.mp3', function(buffer) {
         soundPickup.setBuffer(buffer);
-        soundPickup.setVolume(1.0);
+        registerSfx(soundPickup, 1.0);
+    });
+    audioLoader.load('assets/menu.mp3', function(buffer) {
+        soundMenu.setBuffer(buffer);
+        soundMenu.setLoop(true);
+        registerMusic(soundMenu, 0.5);
+    });
+    audioLoader.load('assets/intro.mp3', function(buffer) {
+        soundIntro.setBuffer(buffer);
+        registerMusic(soundIntro, 0.8);
+        soundIntro.play();
+    });
+    const stageFiles = ['stage1.mp3', 'stage2.mp3', 'stage3.mp3', 'stage4.mp3'];
+    stageFiles.forEach((file, i) => {
+        audioLoader.load(`assets/${file}`, function(buffer) {
+            stageTracks[i].setBuffer(buffer);
+            stageTracks[i].setLoop(true);
+            registerMusic(stageTracks[i], 0.5);
+        });
+    });
+    audioLoader.load('assets/tension.mp3', function(buffer) {
+        soundTension.setBuffer(buffer);
+        soundTension.setLoop(true);
+        registerMusic(soundTension, 0.3);
+    });
+    audioLoader.load('assets/breath.mp3', function(buffer) {
+        soundBreath.setBuffer(buffer);
+        soundBreath.setLoop(true);
+        soundBreath.setVolume(0);
+    });
+    audioLoader.load('assets/flashlight.mp3', function(buffer) {
+        soundFlashlight.setBuffer(buffer);
+        registerSfx(soundFlashlight, 0.8);
+    });
+    audioLoader.load('assets/page.mp3', function(buffer) {
+        soundPageOpen.setBuffer(buffer);
+        registerSfx(soundPageOpen, 0.8);
+    });
+    audioLoader.load('assets/crash.mp3', function(buffer) {
+        soundCrash.setBuffer(buffer);
+        registerSfx(soundCrash, 1.0);
+    });
+    audioLoader.load('assets/zoom.mp3', function(buffer) {
+        soundZoom.setBuffer(buffer);
+        registerSfx(soundZoom, 1.0);
     });
 
     const textureLoader = new THREE.TextureLoader(loadingManager);
@@ -288,6 +474,61 @@ function loadAssets() {
     scene.background = skybox;
 
     buildEnvironment(textureLoader);
+}
+
+// --- MUSIC / AUDIO STATE HELPERS ---
+
+function fadeAudioVolume(sound, targetVolume, duration) {
+    const startVolume = sound.getVolume();
+    const startTime = performance.now();
+    function step() {
+        const t = Math.min((performance.now() - startTime) / duration, 1);
+        sound.setVolume(startVolume + (targetVolume - startVolume) * t);
+        if (t < 1) {
+            requestAnimationFrame(step);
+        } else if (targetVolume === 0) {
+            sound.stop();
+        }
+    }
+    step();
+}
+
+function fadeOutAndStop(sound, duration = 1000) {
+    if (sound.isPlaying) fadeAudioVolume(sound, 0, duration);
+}
+
+function fadeIn(sound, duration = 1000) {
+    if (!sound.isPlaying) {
+        sound.setVolume(0);
+        sound.play();
+    }
+    fadeAudioVolume(sound, getEffectiveVolume(sound), duration);
+}
+
+function updateStageMusic(pages) {
+    const idx = Math.min(pages, stageTracks.length - 1);
+    if (idx === currentStage) return;
+    if (currentStage >= 0) fadeOutAndStop(stageTracks[currentStage]);
+    fadeIn(stageTracks[idx]);
+    currentStage = idx;
+}
+
+function playMenuMusic() {
+    if (soundAmbience.isPlaying) soundAmbience.pause();
+    if (currentStage >= 0 && stageTracks[currentStage].isPlaying) stageTracks[currentStage].pause();
+    if (soundTension.isPlaying) soundTension.pause();
+    if (soundBreath.isPlaying) soundBreath.pause();
+    if (!soundMenu.isPlaying) soundMenu.play();
+}
+
+function stopMenuMusic() {
+    if (soundMenu.isPlaying) soundMenu.pause();
+    if (!soundAmbience.isPlaying) soundAmbience.play();
+    if (currentStage >= 0 && !stageTracks[currentStage].isPlaying) stageTracks[currentStage].play();
+    if (ghostActive) {
+        if (!soundTension.isPlaying) soundTension.play();
+        if (!soundBreath.isPlaying) soundBreath.play();
+    }
 }
 
 function buildEnvironment(textureLoader) {
@@ -460,7 +701,7 @@ function closePage() {
         scene.remove(pendingPage);
         interactables.splice(interactables.indexOf(pendingPage), 1);
         pendingPage = null;
-        
+
         if (pagesCollected === totalPages) {
             winGame();
         } else if (pagesCollected === 1 && !ghostActive) {
@@ -468,7 +709,12 @@ function closePage() {
             ghostActive = true;
             ghost.visible = true;
             teleportGhost();
+            fadeIn(soundTension);
+            soundBreath.setVolume(0);
+            soundBreath.play();
         }
+
+        updateStageMusic(pagesCollected);
     }
 }
 
@@ -476,12 +722,15 @@ function interact() {
     const targetPage = handleCrosshair();
     if (targetPage && !readingPage) {
         pendingPage = targetPage;
-        
+
         // Show correct page texture in overlay
         pageOverlayImg.src = targetPage.userData.textureUrl;
 
         readingPage = true;
-        
+
+        if (soundPageOpen.isPlaying) soundPageOpen.stop();
+        soundPageOpen.play();
+
         // Hide the interact prompt so it doesn't bleed through
         crosshair.classList.remove('active');
         interactPrompt.classList.add('hidden');
@@ -492,8 +741,13 @@ function interact() {
 }
 
 function teleportGhost() {
+    // Reroll the static texture on each (re)spawn for variety across encounters
+    if (staticBuffers.length > 0) {
+        soundStatic.setBuffer(staticBuffers[Math.floor(Math.random() * staticBuffers.length)]);
+    }
+
     // Teleport behind or to the side of the player, closer based on pages collected
-    const baseDistance = Math.max(10, 60 - (pagesCollected * 10)); 
+    const baseDistance = Math.max(10, 60 - (pagesCollected * 10));
     
     // Pick a random angle BEHIND the player's current view
     const lookDir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
@@ -559,19 +813,25 @@ function updateGhostAI(delta) {
     
     // Update visuals and audio for static
     staticOverlay.style.opacity = Math.min(staticIntensity, 1.0);
-    if (noiseGain) noiseGain.gain.value = staticIntensity * 0.5; // Audio static
+    const sfxLevel = sfxVolume * masterVolume;
+    if (noiseGain) noiseGain.gain.value = staticIntensity * 0.5 * sfxLevel; // Raw generated static
+    soundStatic.setVolume(staticIntensity * 0.6 * sfxLevel); // Recorded static texture layer
+    soundBreath.setVolume(staticIntensity * sfxLevel); // Breathing intensifies with fear
 }
 
 function winGame() {
     isGameOver = true;
     controls.unlock();
     if(noiseGain) noiseGain.gain.value = 0; // Stop static sound
+    soundStatic.setVolume(0);
+    soundBreath.setVolume(0);
+    playMenuMusic();
     mainMenu.innerHTML = `
         <h1 style="color: #4CAF50;" class="game-title">You Survived</h1>
         <p class="agenda-text">You found all 4 pages and escaped the forest.</p>
         <button onclick="location.reload()" class="menu-btn" style="margin-top: 30px;">Main Menu</button>
     `;
-    mainMenu.style.display = 'block';
+    showPanel('main');
     blocker.style.display = 'flex';
 }
 
@@ -582,6 +842,8 @@ function loseGame() {
     
     // Jumpscare
     if(!soundFail.isPlaying) soundFail.play();
+    if(!soundCrash.isPlaying) soundCrash.play();
+    if(!soundZoom.isPlaying) soundZoom.play();
     staticOverlay.style.opacity = 1.0;
     
     // Teleport ghost in front of face
@@ -599,9 +861,12 @@ function loseGame() {
             <h1 style="color: #ff0000; font-size: 80px;" class="game-title">HE GOT YOU</h1>
             <button onclick="location.reload()" class="menu-btn" style="margin-top: 30px;">Main Menu</button>
         `;
-        mainMenu.style.display = 'block';
+        showPanel('main');
         blocker.style.display = 'flex';
-        document.body.style.backgroundColor = '#220000'; 
+        document.body.style.backgroundColor = '#220000';
+        soundStatic.setVolume(0);
+        soundBreath.setVolume(0);
+        playMenuMusic();
     }, 2000);
 }
 
@@ -671,11 +936,15 @@ function animate() {
             camera.position.y = groundHeight + 1.6 + (Math.sin(headBobTimer) * 0.1);
             
             if(!soundFootstep.isPlaying && Math.sin(headBobTimer) < -0.8) {
+                if (stepBuffers.length > 0) {
+                    soundFootstep.setBuffer(stepBuffers[Math.floor(Math.random() * stepBuffers.length)]);
+                }
                 soundFootstep.play();
             }
         } else {
             camera.position.y = groundHeight + 1.6;
             headBobTimer = 0;
+            if (soundFootstep.isPlaying) soundFootstep.stop();
         }
 
         // Bounds

@@ -50,14 +50,47 @@
         <div id="blocker" class="hidden">
             <div id="main-menu">
                 <h1 class="game-title">The Last Promise</h1>
+                <p class="controls-text">WASD Move &bull; Shift Sprint &bull; E Interact &bull; F Flashlight</p>
                 <div class="menu-options">
                     <button id="start-btn" class="menu-btn">Start Game</button>
+                    <button id="main-settings-btn" class="menu-btn">Settings</button>
+                </div>
+            </div>
+
+            <div id="pause-menu" class="hidden">
+                <h1 class="game-title">Game Paused</h1>
+                <div class="menu-options">
+                    <button id="resume-btn" class="menu-btn">Resume</button>
+                    <button id="pause-settings-btn" class="menu-btn">Settings</button>
+                    <button id="restart-btn" class="menu-btn">Restart</button>
+                    <button id="quit-btn" class="menu-btn">Quit to Main Menu</button>
+                </div>
+            </div>
+
+            <div id="settings-panel" class="hidden">
+                <h1 class="game-title">Settings</h1>
+                <div class="menu-options">
+                    <label class="slider-container">
+                        <span>Master Volume</span>
+                        <input type="range" id="master-volume-slider" min="0" max="100" value="100">
+                    </label>
+                    <label class="slider-container">
+                        <span>Music Volume</span>
+                        <input type="range" id="music-volume-slider" min="0" max="100" value="100">
+                    </label>
+                    <label class="slider-container">
+                        <span>SFX Volume</span>
+                        <input type="range" id="sfx-volume-slider" min="0" max="100" value="100">
+                    </label>
+                    <label class="slider-container">
+                        <span>Mouse Sensitivity</span>
+                        <input type="range" id="sensitivity-slider" min="20" max="200" value="100">
+                    </label>
                     <label class="checkbox-container menu-btn">
                         <input type="checkbox" id="fullscreen-toggle">
                         <span class="checkmark"></span> Fullscreen
                     </label>
-                    <button class="menu-btn disabled">Options</button>
-                    <button class="menu-btn disabled">Quit</button>
+                    <button id="settings-back-btn" class="menu-btn">Back</button>
                 </div>
             </div>
         </div>
