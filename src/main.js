@@ -3,8 +3,6 @@ import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockCont
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
-
 import { FilmPass } from 'three/examples/jsm/postprocessing/FilmPass.js';
 import { SimplexNoise } from 'three/examples/jsm/math/SimplexNoise.js';
 
@@ -118,13 +116,20 @@ function init() {
 
     startBtn.addEventListener('click', function () {
         if(startBtn.classList.contains('disabled')) return;
-        if (fullscreenToggle.checked && !document.fullscreenElement) {
-            document.documentElement.requestFullscreen().catch(err => console.log(err));
-        }
         gameStarted = true;
         document.querySelector('.game-title').innerText = "Game Paused";
         startBtn.innerText = "Resume Game";
-        controls.lock();
+
+        // Request fullscreen (if enabled) and only ask for pointer lock once that
+        // settles — requesting both at once can make the browser silently deny
+        // the lock, leaving the menu stuck on screen.
+        if (fullscreenToggle.checked && !document.fullscreenElement) {
+            document.documentElement.requestFullscreen()
+                .catch(err => console.log(err))
+                .finally(() => controls.lock());
+        } else {
+            controls.lock();
+        }
     });
 
     controls.addEventListener('lock', function () {
@@ -134,6 +139,13 @@ function init() {
     });
 
     controls.addEventListener('unlock', function () {
+        // Reset held-key/velocity state — key releases can be missed while the
+        // pointer is unlocked (alt-tab, Escape), which would otherwise leave the
+        // player "stuck" walking in a direction once they resume.
+        moveForward = moveBackward = moveLeft = moveRight = false;
+        sprint = false;
+        velocity.set(0, 0, 0);
+
         if (gameStarted && !isGameOver && !readingPage) {
             blocker.style.display = 'flex';
             mainMenu.style.display = 'block';
@@ -141,15 +153,27 @@ function init() {
         }
     });
 
+    // If the browser refuses pointer lock (e.g. re-locking too soon after
+    // Escape, or a permissions/iframe restriction), don't leave the player
+    // stuck looking at a menu that appears unresponsive.
+    document.addEventListener('pointerlockerror', function () {
+        blocker.style.display = 'flex';
+        mainMenu.style.display = 'block';
+    });
+
     const onKeyDown = function (event) {
         if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyE', 'ShiftLeft', 'ShiftRight'].includes(event.code)) {
             event.preventDefault();
         }
         if(readingPage) {
-            if (event.code === 'KeyE' || event.code === 'Escape') {
+            // Escape is deliberately NOT handled here: Escape always releases
+            // pointer lock at the browser level regardless of preventDefault,
+            // so closing the page on Escape would also pop the pause menu open
+            // underneath it in the same tick. KeyE/click are unambiguous.
+            if (event.code === 'KeyE') {
                 closePage();
             }
-            return; 
+            return;
         }
 
         switch (event.code) {
@@ -203,6 +227,7 @@ function init() {
     whiteNoise.start();
 
     renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(renderer.domElement);
 
@@ -352,13 +377,24 @@ function buildEnvironment(textureLoader) {
         }
     });
 
+    // Upright (Y-axis-only) billboard instead of a THREE.Sprite: a Sprite always
+    // faces the camera on every axis, so it visibly tilts/leans as the player
+    // looks up/down or head-bobs, which reads as a flat cutout rather than a
+    // figure standing in the world. A plane that only rotates to face the
+    // player on Y stays upright, like the classic Slender-style ghost billboard.
     const ghostTexture = textureLoader.load('assets/ghost.png'); // HD ghost sprite
-    const ghostMat = new THREE.SpriteMaterial({ map: ghostTexture, color: 0xffffff });
-    ghost = new THREE.Sprite(ghostMat);
-    ghost.scale.set(4, 9, 1); 
+    const ghostGeo = new THREE.PlaneGeometry(4, 9);
+    const ghostMat = new THREE.MeshBasicMaterial({ map: ghostTexture, color: 0xffffff, transparent: true, side: THREE.DoubleSide });
+    ghost = new THREE.Mesh(ghostGeo, ghostMat);
     ghost.position.set(0, 4.5, 20);
     ghost.visible = false;
     scene.add(ghost);
+}
+
+function billboardGhostTowardsCamera() {
+    const dx = camera.position.x - ghost.position.x;
+    const dz = camera.position.z - ghost.position.z;
+    ghost.rotation.y = Math.atan2(dx, dz);
 }
 
 function checkTreeCollision(x, z) {
@@ -474,7 +510,7 @@ function teleportGhost() {
     
     const groundY = noise.noise(ghost.position.x * 0.05, ghost.position.z * 0.05) * 5;
     ghost.position.y = groundY + 4;
-    ghost.lookAt(camera.position.x, ghost.position.y, camera.position.z);
+    billboardGhostTowardsCamera();
 }
 
 function updateGhostAI(delta) {
@@ -513,7 +549,7 @@ function updateGhostAI(delta) {
         // Keep ghost on ground
         const groundY = noise.noise(ghost.position.x * 0.05, ghost.position.z * 0.05) * 5;
         ghost.position.y = groundY + 4;
-        ghost.lookAt(camera.position.x, ghost.position.y, camera.position.z);
+        billboardGhostTowardsCamera();
 
         // Teleportation mechanic: If ghost gets too far away, teleport closer behind player
         if (ghostDistance > 80) {
@@ -556,6 +592,7 @@ function loseGame() {
         camera.position.y,
         camera.position.z + camDir.z * 2
     );
+    billboardGhostTowardsCamera();
 
     setTimeout(() => {
         mainMenu.innerHTML = `
@@ -571,6 +608,7 @@ function loseGame() {
 function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
     composer.setSize(window.innerWidth, window.innerHeight);
 }
