@@ -1,13 +1,18 @@
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
-import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { FilmPass } from 'three/examples/jsm/postprocessing/FilmPass.js';
-import { SimplexNoise } from 'three/examples/jsm/math/SimplexNoise.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
-const noise = new SimplexNoise();
+// Shared terrain-height function — MUST match the floor displacement and the
+// grass/tree ground placement so everything sits on the same ground surface.
+function terrainHeight(x, z) {
+    return Math.sin(x * 0.02) * Math.cos(z * 0.02) * 0.4;
+}
 
 // --- GAME STATE ---
 let camera, scene, renderer, controls, composer;
@@ -38,9 +43,23 @@ let ghostMixer; // drives the ghost model's walk animation
 let ghostWalkAction;
 let ghostGroundOffset = 4; // vertical offset from ground to the model's origin, computed once it loads
 let ghostActive = false;
+let ghostTeleportTimer = 0; // time since the ghost last repositioned (Slenderman stalking)
 let staticIntensity = 0;
 const pageTextures = [];
-const treeColliders = []; // {x, z, radius} — populated once tree1.obj finishes loading
+const treeColliders = []; // {x, z, radius} — trunk colliders, filled as trees are built
+
+// --- ENVIRONMENT / GRAPHICS ---
+const windUniforms = { uTime: { value: 0 }, uWindStrength: { value: 1.0 } };
+let grassMesh = null;            // InstancedMesh of grass blades
+let grassBlades = [];            // per-slot {ox, oz, rot, scale} offsets around the player
+let grassAnchorX = Infinity, grassAnchorZ = Infinity; // last grid cell the grass was centered on
+const GRASS_CELL = 0.9;          // world spacing between grass cells
+const GRASS_RADIUS = 34;         // how far grass extends around the player
+let bloomPass = null, gtaoPass = null; // graphics-effect passes (toggled in Settings)
+let sceneFog = null;             // the FogExp2 instance (attached/detached by the fog toggle)
+
+// Effect toggle state (balanced defaults; AO off — it's the heaviest)
+let fxBloom = true, fxShadows = true, fxFog = true, fxAO = false;
 
 // --- UI ELEMENTS ---
 const splashScreen = document.getElementById('splash-screen');
@@ -60,6 +79,10 @@ const musicVolumeSlider = document.getElementById('music-volume-slider');
 const sfxVolumeSlider = document.getElementById('sfx-volume-slider');
 const sensitivitySlider = document.getElementById('sensitivity-slider');
 const fullscreenToggle = document.getElementById('fullscreen-toggle');
+const fxBloomToggle = document.getElementById('fx-bloom-toggle');
+const fxShadowsToggle = document.getElementById('fx-shadows-toggle');
+const fxFogToggle = document.getElementById('fx-fog-toggle');
+const fxAoToggle = document.getElementById('fx-ao-toggle');
 const storyText = document.getElementById('story-text');
 const pageCountDisplay = document.getElementById('page-count');
 const objectiveText = document.getElementById('objective-text');
@@ -176,8 +199,10 @@ function init() {
     startBtn.classList.add('disabled');
 
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x010101); 
-    scene.fog = new THREE.FogExp2(0x010101, 0.002); // VERY light fog so the skybox can pierce through
+    scene.background = new THREE.Color(0x010101);
+    // Denser, cold atmospheric fog for real depth/dread (toggleable in Settings).
+    sceneFog = new THREE.FogExp2(0x05070b, 0.018);
+    scene.fog = fxFog ? sceneFog : null;
 
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
     camera.position.y = 1.6; 
@@ -200,6 +225,13 @@ function init() {
     flashlight = new THREE.SpotLight(0xffeedd, flashlightIntensity, 120, Math.PI / 4, 0.5, 1);
     flashlight.position.set(0, 0, 0);
     flashlight.target.position.set(0, 0, -1);
+    // Dynamic shadows through the trees (toggleable in Settings).
+    flashlight.castShadow = fxShadows;
+    flashlight.shadow.mapSize.set(1024, 1024);
+    flashlight.shadow.camera.near = 0.5;
+    flashlight.shadow.camera.far = 120;
+    flashlight.shadow.bias = -0.0006;
+    flashlight.shadow.normalBias = 0.02;
     camera.add(flashlight);
     camera.add(flashlight.target);
 
@@ -247,6 +279,30 @@ function init() {
         } else if (document.fullscreenElement) {
             document.exitFullscreen().catch(err => console.log(err));
         }
+    });
+
+    // Graphics-effect toggles
+    fxBloomToggle.addEventListener('change', function () {
+        fxBloom = fxBloomToggle.checked;
+        if (bloomPass) bloomPass.enabled = fxBloom;
+    });
+    fxAoToggle.addEventListener('change', function () {
+        fxAO = fxAoToggle.checked;
+        if (gtaoPass) gtaoPass.enabled = fxAO;
+    });
+    fxFogToggle.addEventListener('change', function () {
+        fxFog = fxFogToggle.checked;
+        scene.fog = fxFog ? sceneFog : null;
+    });
+    fxShadowsToggle.addEventListener('change', function () {
+        fxShadows = fxShadowsToggle.checked;
+        renderer.shadowMap.enabled = fxShadows;
+        flashlight.castShadow = fxShadows;
+        // Force materials to recompile for the shadow-map change to take effect.
+        scene.traverse((o) => { if (o.isMesh && o.material) {
+            const mats = Array.isArray(o.material) ? o.material : [o.material];
+            mats.forEach((m) => { m.needsUpdate = true; });
+        }});
     });
 
     masterVolumeSlider.addEventListener('input', function () {
@@ -370,15 +426,29 @@ function init() {
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping; // cinematic filmic color
+    renderer.toneMappingExposure = 1.05;
+    renderer.shadowMap.enabled = fxShadows;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     document.body.appendChild(renderer.domElement);
 
-    // POST-PROCESSING
+    // POST-PROCESSING pipeline:
+    // RenderPass -> GTAO (AO) -> UnrealBloom -> Film grain -> OutputPass (tone-map + sRGB)
+    const w = window.innerWidth, h = window.innerHeight;
     composer = new EffectComposer(renderer);
-    const renderPass = new RenderPass(scene, camera);
-    composer.addPass(renderPass);
+    composer.addPass(new RenderPass(scene, camera));
 
-    const filmPass = new FilmPass(0.3, 0.05, 1500, false); // Much lower noise intensity (0.3 instead of 1.5)
-    composer.addPass(filmPass);
+    gtaoPass = new GTAOPass(scene, camera, w, h);
+    gtaoPass.enabled = fxAO;
+    composer.addPass(gtaoPass);
+
+    bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 0.45, 0.4, 0.85); // strength, radius, threshold
+    bloomPass.enabled = fxBloom;
+    composer.addPass(bloomPass);
+
+    composer.addPass(new FilmPass(0.3, 0.05, 1500, false)); // subtle grain
+
+    composer.addPass(new OutputPass()); // final tone mapping + color-space conversion
 
     window.addEventListener('resize', onWindowResize);
 
@@ -563,73 +633,20 @@ function buildEnvironment(textureLoader) {
     }
     floorGeometry.computeVertexNormals();
 
-    const floorMaterial = new THREE.MeshStandardMaterial({ map: floorTexture, roughness: 1.0 });
+    const floorMaterial = new THREE.MeshStandardMaterial({ map: floorTexture, color: 0x6b7a55, roughness: 1.0, metalness: 0.0 });
     const floor = new THREE.Mesh(floorGeometry, floorMaterial);
     floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
     scene.add(floor);
 
-    // Load actual 3D Tree Model
-    const treeTexture = textureLoader.load('assets/tree_brown.png');
-    treeTexture.wrapS = THREE.RepeatWrapping;
-    treeTexture.wrapT = THREE.RepeatWrapping;
-    treeTexture.repeat.set(1, 3); // Repeat bark texture vertically
+    const barkTexture = textureLoader.load('assets/tree_brown.png');
+    barkTexture.wrapS = THREE.RepeatWrapping;
+    barkTexture.wrapT = THREE.RepeatWrapping;
+    barkTexture.repeat.set(1, 4);
 
-    const objLoader = new OBJLoader(loadingManager);
-    objLoader.load('assets/tree1.obj', (treeObj) => {
-        const treeMat = new THREE.MeshStandardMaterial({ 
-            map: treeTexture, 
-            color: 0xffffff, // Pure white base to let brown bark show perfectly
-            roughness: 1.0 
-        }); 
-        treeObj.traverse((child) => {
-            if (child.isMesh) {
-                child.geometry.computeVertexNormals(); // Ensure proper 3D shading
-                child.material = treeMat;
-            }
-        });
-
-        const numTrees = 200;
-        const forestRadius = 150;
-        const trees = [];
-        
-        for (let i = 0; i < numTrees; i++) {
-            let r = 15 + Math.random() * (forestRadius - 15);
-            let theta = Math.random() * Math.PI * 2;
-            let x = r * Math.cos(theta);
-            let z = r * Math.sin(theta);
-
-            const clone = treeObj.clone();
-            const yOffset = Math.sin(x * 0.02) * Math.cos(z * 0.02) * 0.4;
-            clone.position.set(x, yOffset, z);
-            clone.rotation.y = Math.random() * Math.PI;
-            clone.scale.set(1.5, 3 + Math.random()*1.5, 1.5); // Thinner, realistic trunks
-            scene.add(clone);
-            trees.push(clone);
-            treeColliders.push({ x: x, z: z, radius: 1.5 }); // trunk radius: tree1.obj base geometry (~1.0) * scale (1.5)
-        }
-
-        // Place 8 pages on 8 random trees
-        const pageGeo = new THREE.PlaneGeometry(0.4, 0.6);
-        const shuffledTrees = [...trees].sort(() => 0.5 - Math.random());
-        
-        for(let i=0; i<totalPages; i++) {
-            const tree = shuffledTrees[i];
-            const pTex = pageTextures[i];
-            const pageMat = new THREE.MeshBasicMaterial({ map: pTex, side: THREE.DoubleSide });
-            const page = new THREE.Mesh(pageGeo, pageMat);
-            
-            const angle = Math.atan2(-tree.position.z, -tree.position.x);
-            page.position.set(
-                tree.position.x + Math.cos(angle) * 1.5,
-                tree.position.y + 1.5,
-                tree.position.z + Math.sin(angle) * 1.5
-            );
-            page.rotation.y = -angle + Math.PI/2;
-            page.userData = { type: 'note', id: i+1, textureUrl: `assets/page${i+1}.png` };
-            scene.add(page);
-            interactables.push(page);
-        }
-    });
+    buildForest(barkTexture); // procedural instanced trees (+ page placement)
+    buildDeadLogs();          // real photoscan dead-log ground props
+    buildGrass();             // instanced 3D grass blades
 
     // Real animated 3D model instead of a flat billboard plane. Uses a plain,
     // untextured rigged figure (no gendered branding/clothing) rather than a
@@ -680,6 +697,205 @@ function buildEnvironment(textureLoader) {
             ghostWalkAction.play();
         }
     });
+}
+
+// Deterministic pseudo-random in [0,1) from a number — for stable grass jitter.
+function hash(n) {
+    const s = Math.sin(n) * 43758.5453;
+    return s - Math.floor(s);
+}
+
+// Inject vertex-shader wind sway into a MeshStandardMaterial (keeps lighting/
+// shadows/fog). Sways more toward the top of the given local-Y span. Works for
+// both instanced foliage (phase varied per instance) and grass.
+function addWindToMaterial(mat, opts = {}) {
+    const minY = opts.minY ?? 3.0, maxY = opts.maxY ?? 11.0, amp = opts.amp ?? 0.35;
+    mat.onBeforeCompile = (shader) => {
+        shader.uniforms.uTime = windUniforms.uTime;
+        shader.uniforms.uWindStrength = windUniforms.uWindStrength;
+        shader.vertexShader = 'uniform float uTime;\nuniform float uWindStrength;\n' + shader.vertexShader;
+        shader.vertexShader = shader.vertexShader.replace(
+            '#include <begin_vertex>',
+            `#include <begin_vertex>
+            #ifdef USE_INSTANCING
+              float wphase = instanceMatrix[3].x * 0.35 + instanceMatrix[3].z * 0.35;
+            #else
+              float wphase = 0.0;
+            #endif
+            float wheight = clamp((transformed.y - ${minY.toFixed(3)}) / ${(maxY - minY).toFixed(3)}, 0.0, 1.0);
+            float wamp = ${amp.toFixed(3)} * wheight * uWindStrength;
+            transformed.x += sin(uTime * 1.3 + wphase) * wamp;
+            transformed.z += cos(uTime * 1.1 + wphase) * wamp * 0.6;
+            `
+        );
+    };
+    mat.needsUpdate = true;
+}
+
+// Procedural instanced pine-ish trees: tapered trunk + 3 stacked foliage cones,
+// each part an InstancedMesh sharing the same per-tree transforms. Also places
+// the 4 diary pages against random trees.
+function buildForest(barkTexture) {
+    const numTrees = 220, forestRadius = 150;
+
+    const trunkGeo = new THREE.CylinderGeometry(0.18, 0.5, 6, 10, 6);
+    trunkGeo.translate(0, 3, 0); // base at y=0
+    const trunkMat = new THREE.MeshStandardMaterial({ map: barkTexture, color: 0x6b5844, roughness: 1.0, metalness: 0.0 });
+
+    const foliageMat = new THREE.MeshStandardMaterial({ color: 0x2c3f2a, roughness: 1.0, metalness: 0.0 });
+    addWindToMaterial(foliageMat, { minY: 3.0, maxY: 11.0, amp: 0.4 });
+    const cone = (r, h, y) => { const g = new THREE.ConeGeometry(r, h, 9, 4); g.translate(0, y, 0); return g; };
+    const foliageParts = [cone(2.6, 4, 5.5), cone(2.1, 3.6, 7.5), cone(1.5, 3, 9.3)];
+
+    const matrices = [];
+    const treeTransforms = [];
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < numTrees; i++) {
+        const r = 15 + Math.random() * (forestRadius - 15);
+        const th = Math.random() * Math.PI * 2;
+        const x = r * Math.cos(th), z = r * Math.sin(th);
+        const s = 0.8 + Math.random() * 0.7;
+        dummy.position.set(x, terrainHeight(x, z), z);
+        dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+        dummy.scale.setScalar(s);
+        dummy.updateMatrix();
+        matrices.push(dummy.matrix.clone());
+        treeTransforms.push({ x, z });
+        treeColliders.push({ x, z, radius: Math.max(0.5, 0.5 * s) });
+    }
+
+    const makeIM = (geo, mat) => {
+        const im = new THREE.InstancedMesh(geo, mat, matrices.length);
+        matrices.forEach((m, idx) => im.setMatrixAt(idx, m));
+        im.instanceMatrix.needsUpdate = true;
+        im.castShadow = true;
+        im.receiveShadow = true;
+        im.frustumCulled = false;
+        scene.add(im);
+    };
+    makeIM(trunkGeo, trunkMat);
+    foliageParts.forEach((g) => makeIM(g, foliageMat));
+
+    // Pages on 4 random trees (same interact/collect flow as before)
+    const shuffled = [...treeTransforms].sort(() => 0.5 - Math.random());
+    const pageGeo = new THREE.PlaneGeometry(0.4, 0.6);
+    for (let i = 0; i < totalPages; i++) {
+        const t = shuffled[i];
+        const pageMat = new THREE.MeshBasicMaterial({ map: pageTextures[i], side: THREE.DoubleSide });
+        const page = new THREE.Mesh(pageGeo, pageMat);
+        const angle = Math.atan2(-t.z, -t.x);
+        page.position.set(t.x + Math.cos(angle) * 1.3, terrainHeight(t.x, t.z) + 1.6, t.z + Math.sin(angle) * 1.3);
+        page.rotation.y = -angle + Math.PI / 2;
+        page.userData = { type: 'note', id: i + 1, textureUrl: `assets/page${i + 1}.png` };
+        scene.add(page);
+        interactables.push(page);
+    }
+}
+
+// Real photoscan dead logs scattered on the ground as atmospheric props (low
+// count so their high triangle density stays within budget). Instanced.
+function buildDeadLogs() {
+    const loader = new GLTFLoader(loadingManager);
+    const variants = [
+        'dead_tree_trunk/dead_tree_trunk_1k.gltf',
+        'dead_tree_trunk_02/dead_tree_trunk_02_1k.gltf'
+    ];
+    variants.forEach((path) => {
+        loader.load('models/' + path, (gltf) => {
+            gltf.scene.updateMatrixWorld(true);
+            let src = null;
+            gltf.scene.traverse((o) => { if (o.isMesh && !src) src = o; });
+            if (!src) return;
+            const geo = src.geometry.clone();
+            geo.applyMatrix4(src.matrixWorld);
+            geo.computeBoundingBox();
+            const bb = geo.boundingBox;
+            const size = new THREE.Vector3(); bb.getSize(size);
+            const baseScale = 5 / Math.max(size.x, size.z, 0.001); // ~5-unit-long logs
+            const mat = src.material;
+            mat.metalness = 0.0; mat.roughness = 1.0;
+
+            const count = 8;
+            const im = new THREE.InstancedMesh(geo, mat, count);
+            const dummy = new THREE.Object3D();
+            for (let i = 0; i < count; i++) {
+                const r = 18 + Math.random() * 120, th = Math.random() * Math.PI * 2;
+                const x = r * Math.cos(th), z = r * Math.sin(th);
+                const s = baseScale * (0.8 + Math.random() * 0.6);
+                dummy.position.set(x, terrainHeight(x, z) - bb.min.y * s + 0.05, z);
+                dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+                dummy.scale.setScalar(s);
+                dummy.updateMatrix();
+                im.setMatrixAt(i, dummy.matrix);
+            }
+            im.instanceMatrix.needsUpdate = true;
+            im.castShadow = true;
+            im.receiveShadow = true;
+            im.frustumCulled = false;
+            scene.add(im);
+        });
+    });
+}
+
+// Instanced 3D grass blades that tile around the player (each blade anchored to
+// a world grid cell via hashing, so the field is world-stable and only the
+// matrices are rewritten when the player crosses a cell — near-zero per-frame
+// cost). Wind handled in the vertex shader.
+function buildGrass() {
+    const N = Math.ceil(GRASS_RADIUS / GRASS_CELL);
+    for (let dgx = -N; dgx <= N; dgx++) {
+        for (let dgz = -N; dgz <= N; dgz++) {
+            if ((dgx * GRASS_CELL) ** 2 + (dgz * GRASS_CELL) ** 2 <= GRASS_RADIUS * GRASS_RADIUS) {
+                grassBlades.push({ dgx, dgz });
+            }
+        }
+    }
+
+    const g = new THREE.PlaneGeometry(0.07, 0.75, 1, 4);
+    g.translate(0, 0.375, 0); // base at y=0
+    const colors = [];
+    const posA = g.attributes.position;
+    for (let i = 0; i < posA.count; i++) {
+        const t = posA.getY(i) / 0.75; // 0 root -> 1 tip
+        const c = new THREE.Color().setHSL(0.27, 0.55, 0.10 + 0.22 * t);
+        colors.push(c.r, c.g, c.b);
+    }
+    g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1.0, metalness: 0.0, side: THREE.DoubleSide });
+    addWindToMaterial(mat, { minY: 0.0, maxY: 0.75, amp: 0.12 });
+
+    grassMesh = new THREE.InstancedMesh(g, mat, grassBlades.length);
+    grassMesh.castShadow = false;
+    grassMesh.receiveShadow = true;
+    grassMesh.frustumCulled = false;
+    scene.add(grassMesh);
+
+    repositionGrass(camera.position.x, camera.position.z);
+}
+
+function repositionGrass(px, pz) {
+    if (!grassMesh) return;
+    const cx0 = Math.round(px / GRASS_CELL), cz0 = Math.round(pz / GRASS_CELL);
+    if (cx0 === grassAnchorX && cz0 === grassAnchorZ) return;
+    grassAnchorX = cx0; grassAnchorZ = cz0;
+    const dummy = new THREE.Object3D();
+    for (let k = 0; k < grassBlades.length; k++) {
+        const o = grassBlades[k];
+        const cx = cx0 + o.dgx, cz = cz0 + o.dgz;
+        const h1 = hash(cx * 0.137 + cz * 0.919);
+        const h2 = hash(cx * 0.731 - cz * 0.251);
+        const h3 = hash(cx * 1.700 + cz * 0.300);
+        const wx = (cx + (h1 - 0.5) * 0.9) * GRASS_CELL;
+        const wz = (cz + (h2 - 0.5) * 0.9) * GRASS_CELL;
+        dummy.position.set(wx, terrainHeight(wx, wz), wz);
+        dummy.rotation.set(0, h3 * Math.PI * 2, 0);
+        const s = 0.7 + h1 * 0.7;
+        dummy.scale.set(s, 0.8 + h2 * 0.6, s);
+        dummy.updateMatrix();
+        grassMesh.setMatrixAt(k, dummy.matrix);
+    }
+    grassMesh.instanceMatrix.needsUpdate = true;
 }
 
 function faceGhostTowards(dirX, dirZ) {
@@ -789,96 +1005,67 @@ function interact() {
 }
 
 function teleportGhost() {
-    // Reroll the static texture on each (re)spawn for variety across encounters
+    // Reroll the static texture on each (re)appearance for variety.
     if (staticBuffers.length > 0) {
         soundStatic.setBuffer(staticBuffers[Math.floor(Math.random() * staticBuffers.length)]);
     }
 
-    // Teleport behind or to the side of the player, closer based on pages collected
-    const baseDistance = Math.max(10, 60 - (pagesCollected * 10));
-    
-    // Pick a random angle BEHIND the player's current view
-    const lookDir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
-    const angle = Math.atan2(lookDir.x, lookDir.z);
-    
-    // Add an offset between 90 and 270 degrees to spawn behind
-    const randomOffset = (Math.PI / 2) + (Math.random() * Math.PI);
-    const spawnAngle = angle + randomOffset;
+    // Distance band around the player. Shrinks as pages are collected (she
+    // closes in), but never below a floor so she can't teleport onto you.
+    const minDist = Math.max(12, 30 - pagesCollected * 5);
+    const maxDist = minDist + 20;
+    const dist = minDist + Math.random() * (maxDist - minDist);
 
-    const spawnDistance = baseDistance + Math.random() * 20;
+    // Bias the spawn to 90–270° off the player's current facing (around/behind).
+    const lookDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    const baseAngle = Math.atan2(lookDir.x, lookDir.z);
+    const spawnAngle = baseAngle + (Math.PI / 2) + Math.random() * Math.PI;
 
-    ghost.position.x = camera.position.x + Math.sin(spawnAngle) * spawnDistance;
-    ghost.position.z = camera.position.z + Math.cos(spawnAngle) * spawnDistance;
-    
-    const groundY = noise.noise(ghost.position.x * 0.05, ghost.position.z * 0.05) * 5;
-    ghost.position.y = groundY + ghostGroundOffset;
-    faceGhostTowards(camera.position.x - ghost.position.x, camera.position.z - ghost.position.z);
+    const gx = camera.position.x + Math.sin(spawnAngle) * dist;
+    const gz = camera.position.z + Math.cos(spawnAngle) * dist;
+    ghost.position.set(gx, terrainHeight(gx, gz) + ghostGroundOffset, gz);
+    faceGhostTowards(camera.position.x - gx, camera.position.z - gz);
 }
 
+// Faithful Slender: The Eight Pages behavior — she never walks toward you.
+// She stands at a distance, freezes while watched (dread builds → death if you
+// stare too long), and silently teleports to a new spot around you on a timer
+// whenever you look away. Gets more frequent/closer as pages are collected.
 function updateGhostAI(delta) {
-    if(!ghostActive) return;
+    if (!ghostActive) return;
 
     const ghostDistance = camera.position.distanceTo(ghost.position);
-    
-    if (ghostDistance < 2.0) {
-        loseGame(); // Touched you
-    }
-
     const ghostDir = new THREE.Vector3().subVectors(ghost.position, camera.position).normalize();
-    const lookDir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
-    const dot = lookDir.dot(ghostDir);
-    
-    // Check if looking at ghost. No distance cap here: with one (60 units),
-    // the ghost was unstoppable by staring whenever it was farther out than
-    // that (e.g. right after a teleport, which can spawn it up to 80 units
-    // away) — it would keep closing the distance regardless of the player's
-    // behavior until it happened to cross under 60, which read as "it got me
-    // even when I was looking right at it."
-    const isLookingAtGhost = dot > 0.6;
+    const lookDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    const isLookingAtGhost = lookDir.dot(ghostDir) > 0.55;
 
-    if(isLookingAtGhost) {
-        // Staring at ghost -> Static builds up!
-        const buildupRate = 0.25 + (pagesCollected * 0.1); // Reduced buildup rate for more reaction time
+    if (isLookingAtGhost) {
+        // Watched → she freezes and dread builds. Faster when close / later game.
+        const proximityFactor = 1 + Math.max(0, 40 - ghostDistance) / 20; // up to ~3x point-blank
+        const buildupRate = (0.12 + pagesCollected * 0.05) * proximityFactor;
         staticIntensity += buildupRate * delta;
-
-        if(staticIntensity >= 1.0) {
-            loseGame();
-        }
+        ghostTeleportTimer = 0; // lingers in view while stared at
+        if (staticIntensity >= 1.0) loseGame();
     } else {
-        // Not looking at ghost -> Ghost moves towards you!
-        staticIntensity = Math.max(0, staticIntensity - 0.5 * delta);
-
-        // Move ghost towards player. NOTE: `ghostDir` points from the camera
-        // TOWARD the ghost (needed above for the "looking at it" dot-product
-        // check) — moving along it would push the ghost further away, so the
-        // actual chase direction is its negation (ghost -> camera).
-        const moveDir = ghostDir.clone().negate();
-        const speed = 2.0 + (pagesCollected * 1.5);
-        const moveStep = moveDir.multiplyScalar(speed * delta);
-        ghost.position.add(moveStep);
-
-        // Keep ghost on ground
-        const groundY = noise.noise(ghost.position.x * 0.05, ghost.position.z * 0.05) * 5;
-        ghost.position.y = groundY + ghostGroundOffset;
-        faceGhostTowards(moveDir.x, moveDir.z);
-        if (ghostMixer) ghostMixer.update(delta);
-
-        // Teleportation mechanic: If ghost gets too far away, teleport closer behind player
-        if (ghostDistance > 80) {
+        // Not watched → dread fades and she repositions on a timer (no chase).
+        staticIntensity = Math.max(0, staticIntensity - 0.45 * delta);
+        ghostTeleportTimer += delta;
+        const interval = Math.max(2.0, 6.0 - pagesCollected * 1.0);
+        if (ghostTeleportTimer >= interval) {
             teleportGhost();
+            ghostTeleportTimer = 0;
         }
     }
-    
-    // Update visuals and audio for static
+
+    // Static visuals + audio (scaled by SFX/master volume)
     staticOverlay.style.opacity = Math.min(staticIntensity, 1.0);
     const sfxLevel = sfxVolume * masterVolume;
-    if (noiseGain) noiseGain.gain.value = staticIntensity * 0.5 * sfxLevel; // Raw generated static
-    soundStatic.setVolume(staticIntensity * 0.6 * sfxLevel); // Recorded static texture layer
-    soundBreath.setVolume(staticIntensity * sfxLevel); // Breathing intensifies with fear
+    if (noiseGain) noiseGain.gain.value = staticIntensity * 0.5 * sfxLevel;
+    soundStatic.setVolume(staticIntensity * 0.6 * sfxLevel);
+    soundBreath.setVolume(staticIntensity * sfxLevel);
 
-    // Proximity cue: tension swells as the ghost draws near, even if you
-    // aren't looking at it (staring already drives static/breath above).
-    const proximity = Math.max(0, 1 - ghostDistance / 60);
+    // Proximity tension swell (present regardless of looking)
+    const proximity = Math.max(0, 1 - ghostDistance / 50);
     soundTension.setVolume(Math.max(0.3, proximity) * musicVolume * masterVolume);
 }
 
@@ -1015,6 +1202,10 @@ function animate() {
         if(camera.position.x < -190) camera.position.x = -190;
         if(camera.position.z > 190) camera.position.z = 190;
         if(camera.position.z < -190) camera.position.z = -190;
+
+        // Wind animation (trees + grass) and grass tiling around the player
+        windUniforms.uTime.value = time / 1000;
+        repositionGrass(camera.position.x, camera.position.z);
 
         updateGhostAI(delta);
 

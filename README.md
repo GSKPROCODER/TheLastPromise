@@ -42,3 +42,7 @@ This build is configured with Vite and uses `GLTFLoader` to load the ghost model
 3. Point the `gltfLoader.load(...)` call in `buildEnvironment()` (`src/main.js`) at the new file.
 
 **Current ghost model attribution**: `public/models/ghost.glb` is the "RiggedFigure" sample asset from the [Khronos Group glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) repository, © 2017 Cesium, licensed [CC-BY 4.0 International](https://creativecommons.org/licenses/by/4.0/). It's a plain, untextured test rig (no gendered branding/clothing), tinted pale in code to read as a spirit — a free, directly-downloadable placeholder used to verify the animated-3D-model pipeline. Swap in a proper character model before shipping for real.
+
+**Trees**: the standing forest trees are procedural (instanced trunk + foliage cones, built in code — not a downloaded model). Photoreal photoscan trees were evaluated but are hundreds of MB of geometry, impractical for the web. The scattered dead **logs** on the ground are real photoscan props from [Poly Haven](https://polyhaven.com/) (`dead_tree_trunk`, `dead_tree_trunk_02`), CC0. To use higher-fidelity standing trees, drop a web-optimized (game-ready, low-to-mid poly) `.glb` into `public/models/` and point `buildForest()`/a GLTF loader in `src/main.js` at it.
+
+**Grass** is real instanced blade geometry (not a texture), tiling around the player with vertex-shader wind. **Graphics effects** (bloom, flashlight shadows, atmospheric fog, ambient occlusion) are toggleable in the in-game Settings menu.
