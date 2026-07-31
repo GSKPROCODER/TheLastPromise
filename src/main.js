@@ -1104,12 +1104,12 @@ function updateGhostAI(delta) {
             staticIntensity = 1.0;
             loseGame();
         } else {
-            // Watched → she freezes and dread builds SLOWLY: staring ~45s kills
+            // Watched → she freezes and dread builds SLOWLY: staring ~35s kills
             // you early game (0→1). Faster up close / later game; but staring
             // in the dark (flashlight off) builds slower, buying you more time.
             const proximityFactor = 1 + Math.max(0, 30 - ghostDistance) / 30; // 1x far → up to 2x point-blank
             const lightFactor = flashlightOn ? 1.0 : 0.5; // dark = slower dread
-            const buildupRate = (0.022 + pagesCollected * 0.012) * proximityFactor * lightFactor;
+            const buildupRate = (0.029 + pagesCollected * 0.012) * proximityFactor * lightFactor;
             staticIntensity += buildupRate * delta;
             ghostTeleportTimer = 0; // lingers in view while stared at
             if (staticIntensity >= 1.0) loseGame();
